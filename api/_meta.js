@@ -82,7 +82,7 @@ async function post(body, timeoutMs) {
     if (choice?.finish_reason === 'length') throw new Error('The answer was cut off. Try again.');
     throw new Error('Meta returned an empty answer. Try again.');
   }
-  return { text, model: data.model || body.model };
+  return { text, model: data.model || body.model, finishReason: choice?.finish_reason || 'unknown' };
 }
 
 /**
@@ -93,7 +93,7 @@ async function post(body, timeoutMs) {
  * - reasoning_effort: never "none" (returns 400 on Muse Spark)
  * - temperature left at Meta's recommended default
  */
-export async function chat({ instructions, prompt, schema, effort = 'low', maxTokens = 3000, safetyId }) {
+export async function chat({ instructions, prompt, schema, effort = 'low', maxTokens = 3000, safetyId, deadline }) {
   const build = (model, withSchema) => ({
     model,
     messages: [
@@ -107,14 +107,15 @@ export async function chat({ instructions, prompt, schema, effort = 'low', maxTo
   });
 
   // One overall deadline across retries, so the function always answers before Vercel's 60 s limit.
-  const deadline = Date.now() + 52000;
+  deadline = deadline || Date.now() + 52000;
   let model = MODEL;
   let withSchema = true;
   for (let attempt = 0; attempt < 3; attempt++) {
     const left = deadline - Date.now();
     if (left < 3000) throw Object.assign(new Error('deadline'), { name: 'TimeoutError' });
     try {
-      return await post(build(model, withSchema), left);
+      const out = await post(build(model, withSchema), left);
+      return { ...out, format: withSchema && schema ? 'json_schema' : 'plain' };
     } catch (e) {
       if (isModelUnavailable(e) && FALLBACK_MODEL && model !== FALLBACK_MODEL) {
         logError('chat:model-fallback', e);

@@ -4,13 +4,14 @@ There are two kinds of tests. They prove different things.
 
 ## 1. Mocked tests (done, in this repo)
 
-`npm test` runs `tests/server.test.mjs`: the real `/api/ai` and `/api/transcribe` code against a **local fake of Meta's API**. 17 tests cover:
+`npm test` runs `tests/server.test.mjs` (17 tests) and `tests/exercises.test.mjs` (13 tests): the real `/api/ai` and `/api/transcribe` code against a **local fake of Meta's API**. 30 tests in total. They cover:
 
 - Chat Completions request shape from Meta's docs: `developer` role, `response_format: json_schema`, `max_completion_tokens`, `reasoning_effort`, default temperature, hashed `safety_identifier`
 - Explanation language: `both` returns Arabic and English; `ar` / `en` return only that language
 - Fallback from `muse-spark-1.3` to `META_FALLBACK_MODEL` when Meta says the model is unavailable
 - Meta errors (400, 401, 429, 500, 504, empty answer, cut-off answer, non-JSON) become safe messages; the key never appears in a response
 - A Meta request that never answers ends with a timeout error before Vercel's 60-second limit
+- Personal exercises: strict per-type schema; valid, Markdown-wrapped, malformed, cut-off and list-less answers; alternative field names and type spellings; words not in the list; incomplete items retried once then reported as an error; every accepted exercise also passes the app's own validator; logs contain no key or user content
 - Input validation, method/origin/content-type/size checks, per-IP and global rate limits
 - Transcribe multipart matches Meta's reference (JSON `request` part without filename, WAV `audio` part, `Accept: application/json`); bad WAV files are refused before reaching Meta
 
@@ -52,3 +53,18 @@ None of these have been run yet. Do them on the deployed site, on your phone.
 | 9 | Open the site in a second browser and tap ~25 words in a minute | The 21st gets “Too many requests” |
 
 Only after checks 1–7 pass can we say the Meta integration works.
+
+## Reading the exercise diagnostics in Vercel
+
+Every exercise request logs one line per attempt, for example:
+
+```
+[ai] op=exercises model=muse-spark-1.3 format=json_schema finish=stop len=2840 attempt=1 parse=ok shape=ok items=6 valid=6 types=mcq:2,fill:1,order:1,translate:1,explain:1 dropped=- missing=- ms=9800
+```
+
+- `valid` below 2 on both attempts → the app shows “incomplete twice”. `missing=` names the absent fields (e.g. `mcq.options`), `dropped=` the reason.
+- `format=plain` → Meta rejected the JSON schema and Sada fell back to plain JSON.
+- `finish=length` → the answer was cut off by the token limit.
+- `parse=failed` → the answer was not valid JSON.
+
+Lines contain only counts and fixed field names: no words, sentences, answers, or keys.

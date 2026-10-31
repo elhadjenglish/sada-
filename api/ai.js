@@ -1,5 +1,6 @@
 import { chat, parseJson, friendlyError, logError, safetyIdFor, MODEL } from './_meta.js';
 import { guard, readBody, LIMITS } from './_guard.js';
+import { exerciseSchema, normalizeExercises, describeStats } from './_exercises.js';
 
 export const config = { maxDuration: 60 };
 
@@ -46,29 +47,7 @@ const SCHEMAS = {
       ['is_vocab', 'word', 'lemma', 'pos', 'ipa', 'meaning_en', 'meaning_ar', 'in_context_en', 'in_context_ar', 'example', 'answer_en', 'answer_ar']
     ),
   },
-  exercises: {
-    name: 'ExerciseSet',
-    schema: S(
-      {
-        exercises: {
-          type: 'array',
-          items: S(
-            {
-              type: { type: 'string', enum: ['mcq', 'context', 'fill', 'order', 'translate', 'explain'] },
-              word: T, prompt: T, sentence: T,
-              options: { type: 'array', items: T },
-              answer_index: { type: 'integer' },
-              explanation: T, answer: T,
-              accept: { type: 'array', items: T },
-              hint: T, source_ar: T, reference_en: T,
-            },
-            ['type', 'word']
-          ),
-        },
-      },
-      ['exercises']
-    ),
-  },
+  // exercises: built per request by exerciseSchema() (word list + count), see _exercises.js
   grade: {
     name: 'Grade',
     schema: S(
@@ -121,9 +100,12 @@ Fields:
       struggling: w?.struggling === true,
     }));
     const count = Math.min(Math.max(parseInt(p.count, 10) || 6, 3), 10);
+    const list = [...new Set(words.map((w) => w.word))];
     return {
       effort: 'low',
       maxTokens: 6000,
+      words: list,
+      schema: exerciseSchema(list, count),
       prompt: `Learner level: ${level}. Their words (JSON): ${JSON.stringify(words)}
 
 Write ${count} exercises. Rules:
@@ -133,10 +115,11 @@ Write ${count} exercises. Rules:
 - Mix the types. Keep sentences short and natural for ${level}. Distractors must be plausible but clearly wrong.
 - Never reveal the answer inside the prompt or sentence.
 
-Types and the fields each one uses:
+Every field listed for a type is required; never leave one out or empty.
+Types and their fields:
 - mcq: prompt, options (4), answer_index (0-3), explanation
 - context: sentence (contains the word), prompt ("What does 'X' mean here?"), options (4 short meanings), answer_index, explanation
-- fill: sentence with ___ where the word or its correct form goes, answer (exact form), accept (other correct forms), hint (Arabic allowed)
+- fill: sentence containing exactly three underscores ___ where the word or its correct form goes, answer (exact form), accept (other correct forms, may be empty), hint (Arabic allowed)
 - order: answer (a 5 to 9 word sentence using the word)
 - translate: source_ar (a short Arabic sentence whose natural English translation uses the word), reference_en
 - explain: prompt ("Explain what 'X' means and give your own example.")`,
@@ -214,17 +197,36 @@ export default async function handler(req, res) {
     throw e;
   }
 
+  const started = Date.now();
+  const deadline = started + 55000;
+  const base = { instructions: TUTOR, prompt: spec.prompt, effort: spec.effort, maxTokens: spec.maxTokens, safetyId: safetyIdFor(ok.ip), deadline };
+  // Diagnostics: operation, model, output format, length, finish reason, parse result. Never prompts, answers or user words.
+  const diag = (r, extra) => console.info(`[ai] op=${task} model=${r.model} format=${r.format} finish=${r.finishReason} len=${r.text.length} ${extra} ms=${Date.now() - started}`);
+
   try {
-    const { text, model } = await chat({
-      instructions: TUTOR,
-      prompt: spec.prompt,
-      schema: SCHEMAS[task],
-      effort: spec.effort,
-      maxTokens: spec.maxTokens,
-      safetyId: safetyIdFor(ok.ip),
-    });
-    const result = shapeResult(task, parseJson(text), oneOf(payload.lang, LANGS, 'both'));
-    return res.status(200).json({ result, model, configuredModel: MODEL, source: 'meta' });
+    if (task === 'exercises') {
+      // Validated here, not only in the browser, so an unusable answer is retried once and then
+      // reported as a real error instead of a 200 the app can't use.
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        if (attempt === 2 && deadline - Date.now() < 15000) break;
+        const r = await chat({ ...base, schema: spec.schema });
+        let parsed;
+        try { parsed = parseJson(r.text); } catch { diag(r, `attempt=${attempt} parse=failed`); continue; }
+        const { exercises, stats } = normalizeExercises(parsed, spec.words);
+        diag(r, `attempt=${attempt} parse=ok ${describeStats(stats)}`);
+        if (exercises.length >= 2) {
+          return res.status(200).json({ result: { exercises }, model: r.model, configuredModel: MODEL, source: 'meta' });
+        }
+      }
+      return res.status(502).json({ error: 'The AI’s exercises were incomplete twice, so Sada didn’t use them. Try again in a moment, or use the offline drill.' });
+    }
+
+    const r = await chat({ ...base, schema: SCHEMAS[task] });
+    let parsed;
+    try { parsed = parseJson(r.text); } catch (e) { diag(r, 'parse=failed'); throw e; }
+    diag(r, 'parse=ok');
+    const result = shapeResult(task, parsed, oneOf(payload.lang, LANGS, 'both'));
+    return res.status(200).json({ result, model: r.model, configuredModel: MODEL, source: 'meta' });
   } catch (e) {
     logError(`ai:${task}`, e);
     return res.status(502).json({ error: friendlyError(e) });
