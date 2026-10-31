@@ -1,0 +1,105 @@
+# Builds the Stage 0 wake-word test app as a DEBUG APK and offers it as a downloadable artifact.
+# No release, no private signing key, no secrets.
+#
+# Accepts the app either as the folder  android-poc/  or as the file  android-poc.zip  in the
+# repository root (easier to upload from a phone). If both exist, the zip is used.
+name: "Android Stage 0: build debug APK"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'android-poc/**'
+      - 'android-poc.zip'
+      - '.github/workflows/android-stage0.yml'
+
+permissions:
+  contents: read
+
+env:
+  SHERPA_VERSION: '1.12.33'
+  KWS_MODEL: sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the app (android-poc folder or android-poc.zip)
+        run: |
+          set -euo pipefail
+          if [ -f android-poc.zip ]; then
+            echo "Using android-poc.zip"
+            rm -rf android-poc
+            unzip -q android-poc.zip
+          elif [ -d android-poc ]; then
+            echo "Using the android-poc folder"
+          else
+            echo "::error::Neither android-poc.zip nor an android-poc folder was found in the repository root."
+            exit 1
+          fi
+          for f in android-poc/settings.gradle android-poc/app/build.gradle android-poc/app/src/main/AndroidManifest.xml \
+                   android-poc/scripts/fetch-sherpa.sh android-poc/scripts/prepare-model.sh android-poc/keywords/keywords-input.txt; do
+            [ -f "$f" ] || { echo "::error::Missing $f. The folder structure was lost during upload; upload android-poc.zip instead."; exit 1; }
+          done
+          echo "All expected files present."
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      # Keeps the same debug signature between builds, so a new APK installs over the old one
+      # (and your test results inside the app are kept). This is Android's standard debug key, not a secret.
+      - name: Reuse the debug signing key from earlier builds
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: sada-stage0-debug-keystore
+
+      - name: Fetch sherpa-onnx (official Kotlin API + Android native libraries)
+        working-directory: android-poc
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/fetch-sherpa.sh
+
+      - name: Fetch keyword model and convert "Hey Sada" / "Continue" to tokens
+        working-directory: android-poc
+        run: bash scripts/prepare-model.sh
+
+      - name: Offline keyword check on synthetic speech (informational only)
+        working-directory: android-poc
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -qq espeak-ng >/dev/null
+          python3 scripts/kws_check.py
+
+      - name: Unit tests (state machine)
+        working-directory: android-poc
+        run: gradle --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Build debug APK
+        working-directory: android-poc
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace assembleDebug
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/sada-stage0-debug-${{ github.run_number }}.apk"
+          ls -la dist
+
+      - name: Upload APK as a downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sada-stage0-debug-apk-${{ github.run_number }}
+          path: android-poc/dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
