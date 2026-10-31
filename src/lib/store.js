@@ -9,7 +9,7 @@ export const SCHEMA_VERSION = 1;
 const defaults = {
   version: SCHEMA_VERSION,
   profile: null,
-  settings: { wakePhrase: 'Hey Sada', handsFree: false, autoSave: true, rate: 1 },
+  settings: { wakePhrase: 'Hey Sada', resumePhrase: 'Continue', handsFree: false, autoSave: true, rate: 1 },
   words: [],
   progress: {},
   activity: {},

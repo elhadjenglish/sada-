@@ -57,7 +57,9 @@ export default function Settings({ onClose }) {
       <section className="set-group">
         <label className="label" htmlFor="s-wake">Hands-free phrase</label>
         <input id="s-wake" className="input" value={settings.wakePhrase} onChange={(e) => setSettings({ wakePhrase: e.target.value })} maxLength={30} />
-        <p className="fine">Two or three distinct words work best. Hands-free uses Chrome’s built-in recognizer while Sada is open; questions you ask with the mic button go to Muse Voice Transcribe.</p>
+        <label className="label" htmlFor="s-resume">Resume phrase</label>
+        <input id="s-resume" className="input" value={settings.resumePhrase} onChange={(e) => setSettings({ resumePhrase: e.target.value })} maxLength={30} />
+        <p className="fine">Two or three distinct words work best for the wake phrase. Hands-free uses Chrome’s own speech recognition while Sada is open on screen (no Meta calls until you ask a question); the mic button uses Muse Voice Transcribe.</p>
 
         <label className="toggle">
           <input type="checkbox" checked={settings.autoSave} onChange={(e) => setSettings({ autoSave: e.target.checked })} />

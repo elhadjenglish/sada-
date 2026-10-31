@@ -3,7 +3,8 @@ import { useStore, setProgress, saveWord, deleteWord, logActivity, addEpisode, r
 import { EPISODES, LEVELS, levelDistance } from '../lib/episodes.js';
 import { splitSentences, tokenize, norm, matchPhrase } from '../lib/text.js';
 import { askAI, transcribe } from '../lib/ai.js';
-import { ttsSupported, utter, speakOnce, wakeSupported, startWakeListener } from '../lib/speech.js';
+import { ttsSupported, utter, speakOnce, wakeSupported, createRecognizer, speakSegments, earcon, primeEarcon } from '../lib/speech.js';
+import { createHandsFree, isPhrase } from '../lib/handsfree.js';
 import { recordingSupported, startRecording, micMessage } from '../lib/recorder.js';
 import { Icon, Sheet, Ar, Bi, Spinner, LevelTag, toast, DemoTag } from '../ui.jsx';
 import { ProgressBar } from './Today.jsx';
@@ -137,6 +138,7 @@ function Player({ episode, onBack, go }) {
   const [ask, setAsk] = useState(null);
   const [voice, setVoice] = useState(null);
   const [handsFree, setHandsFree] = useState(false);
+  const [hf, setHf] = useState(null); // hands-free status from the controller
   const [typed, setTyped] = useState('');
 
   const idxRef = useRef(idx);
@@ -146,7 +148,6 @@ function Player({ episode, onBack, go }) {
   const resumeRef = useRef(false);
   const askTokenRef = useRef(0);
   const recRef = useRef(null);
-  const awaitingRef = useRef(false);
   const caughtAtStart = useRef(s.words.length);
   const sentenceEls = useRef([]);
   const lastSaveRef = useRef(0);
@@ -260,16 +261,18 @@ function Player({ episode, onBack, go }) {
     setAsk({ status: 'loading', word, question, sentence });
     try {
       const r = await askAI('explain', { word, question, sentence, before, level: profile.level, lang: profile.explainLang });
-      if (askTokenRef.current !== my) return;
+      if (askTokenRef.current !== my) return null;
       // A spoken question may be about a word from a moment ago: keep the sentence that actually contains it.
       const ctx = r?.word ? sentenceWith(sentences, r.word, si) ?? sentence : sentence;
       let savedInfo = null;
       if (r?.is_vocab && r.word && !r.demo_unavailable && getState().settings.autoSave) savedInfo = save(r, ctx);
       logActivity('asked');
       setAsk({ status: 'done', word, question, sentence: ctx, result: r, saved: savedInfo });
+      return r;
     } catch (e) {
-      if (askTokenRef.current !== my) return;
+      if (askTokenRef.current !== my) return null;
       setAsk({ status: 'error', word, question, sentence, error: e.message, sentenceIdx: si });
+      return null;
     }
   };
 
@@ -281,6 +284,7 @@ function Player({ episode, onBack, go }) {
     });
 
   const continueListening = () => {
+    hfRef.current?.onManualResume();
     askTokenRef.current++;
     setAsk(null);
     setTyped('');
@@ -290,13 +294,14 @@ function Player({ episode, onBack, go }) {
   const handleUtterance = (text) => {
     const t = norm(text);
     if (!t) return toast('Didn’t catch that. Try again a little closer to the mic.');
-    if (CONTINUE.test(t) || /^(كمل|واصل)/.test(text.trim())) return continueListening();
+    if (CONTINUE.test(t) || isPhrase(text, settings.resumePhrase) || /^(كمل|واصل)/.test(text.trim())) return continueListening();
     if (/^(pause|stop|wait)$/.test(t)) { resumeRef.current = false; return pause(); }
     askAbout({ question: text });
   };
 
   /* --- push-to-talk via Muse Voice Transcribe --- */
   const startVoice = async () => {
+    if (handsFree) return toast(`Hands-free is on: just say “${settings.wakePhrase}” and your question.`);
     if (!recordingSupported) return toast('This browser can’t record audio. Type your question instead.');
     resumeRef.current = resumeRef.current || isPlaying();
     pause();
@@ -336,28 +341,67 @@ function Player({ episode, onBack, go }) {
   };
   const cancelVoice = () => { recRef.current?.cancel(); recRef.current = null; setVoice(null); };
 
-  /* --- optional hands-free wake phrase (browser recognizer, experimental) --- */
-  const handlers = useRef({});
-  handlers.current = { askOpen: !!ask, continueListening, handleUtterance, pause, wake: settings.wakePhrase };
+  /* --- hands-free: wake phrase → question → spoken answer → resume phrase (see lib/handsfree.js) --- */
+  const hfRef = useRef(null);
+  const live = useRef({});
+  live.current = { isPlaying, pause, play, askAbout, settings, profile, audioMode };
   useEffect(() => {
-    if (!handsFree || voice) return;
-    return startWakeListener({
-      onText: (txt) => {
-        const h = handlers.current;
-        if (h.askOpen && CONTINUE.test(norm(txt))) return h.continueListening();
-        const m = matchPhrase(txt, h.wake);
-        if (m) {
-          if (m.rest) return h.handleUtterance(m.rest);
-          resumeRef.current = resumeRef.current || isPlaying();
-          h.pause();
-          awaitingRef.current = true;
-          return toast('Listening. Ask your question.');
-        }
-        if (awaitingRef.current) { awaitingRef.current = false; h.handleUtterance(txt); }
-      },
-      onFatal: () => { setHandsFree(false); toast('Hands-free needs microphone access in Chrome.'); },
+    if (!handsFree) return;
+    let wakeLock = null;
+    const lock = async () => { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {} };
+    const rec = createRecognizer({
+      onResult: (t, fin) => ctrl.onTranscript(t, fin),
+      onEnd: () => ctrl.onRecognitionEnd(),
+      onError: (code) => ctrl.onRecognitionError(code),
     });
-  }, [handsFree, voice]); // eslint-disable-line
+    const ctrl = createHandsFree({
+      recognizer: rec,
+      getSettings: () => ({ ...live.current.settings, explainLang: live.current.profile.explainLang }),
+      player: {
+        isPlaying: () => live.current.isPlaying(),
+        pause: () => {
+          const pos = live.current.audioMode ? { kind: 'audio', time: audioRef.current?.currentTime || 0 } : { kind: 'tts', idx: idxRef.current };
+          live.current.pause();
+          resumeRef.current = true;
+          return pos;
+        },
+        resume: (pos) => {
+          resumeRef.current = false;
+          askTokenRef.current++;
+          setAsk(null);
+          if (pos.kind === 'audio' && audioRef.current) {
+            if (Math.abs(audioRef.current.currentTime - pos.time) > 0.05) audioRef.current.currentTime = pos.time;
+          } else if (pos.kind === 'tts') {
+            idxRef.current = pos.idx;
+            setIdx(pos.idx);
+          }
+          live.current.play();
+        },
+      },
+      ask: (q) => live.current.askAbout({ question: q }),
+      speak: (script) => speakSegments(script),
+      earcon,
+      onStatus: (st) => {
+        setHf(st);
+        if (st.kind === 'no-question') toast('No question heard. Back to the episode.');
+        if (st.kind === 'speak-failed') toast('Sada couldn’t speak the answer. It’s on the screen.');
+        if (st.kind === 'fatal') { setHandsFree(false); toast(HF_FATAL[st.code] || HF_FATAL.default); }
+      },
+    });
+    hfRef.current = ctrl;
+    rec.modeReady.then((m) => setHf((h) => ({ ...(h || {}), mode: m })));
+    const onVis = () => { ctrl.onVisibility(document.hidden); if (!document.hidden) lock(); };
+    document.addEventListener('visibilitychange', onVis);
+    lock();
+    ctrl.start();
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      ctrl.stop();
+      hfRef.current = null;
+      setHf(null);
+      wakeLock?.release?.().catch(() => {});
+    };
+  }, [handsFree]); // eslint-disable-line
 
   const cycleRate = () => {
     const next = RATES[(RATES.indexOf(settings.rate) + 1) % RATES.length] || 1;
@@ -376,14 +420,14 @@ function Player({ episode, onBack, go }) {
           <span className="small muted"><LevelTag level={episode.level} /> {audioMode ? 'Publisher audio' : 'Narrated'}</span>
         </div>
         {wakeSupported ? (
-          <button className={`icon-btn ${handsFree ? 'on' : ''}`} onClick={() => setHandsFree(!handsFree)} aria-pressed={handsFree}
+          <button className={`icon-btn ${handsFree ? 'on' : ''}`} onClick={() => { primeEarcon(); setHandsFree(!handsFree); }} aria-pressed={handsFree}
             aria-label={handsFree ? 'Turn hands-free off' : 'Turn hands-free on'} title="Hands-free">
             <Icon name="ear" />
           </button>
         ) : <span style={{ width: 40 }} />}
       </header>
 
-      {handsFree && <p className="hint live">Hands-free on. Say “{settings.wakePhrase}, what does … mean?”, then “continue”.</p>}
+      {handsFree && <p className="hint live" role="status" aria-live="polite">{hfText(hf, settings)}</p>}
       {!handsFree && s.words.length === 0 && <p className="hint">Tap any word you don’t know. Or tap the mic and ask.</p>}
 
       <article className="transcript" lang="en">
@@ -433,7 +477,7 @@ function Player({ episode, onBack, go }) {
         <div className="ctrl-row">
           <button className="rate" onClick={cycleRate} aria-label={`Speed ${settings.rate}x`} disabled={audioMode}>{audioMode ? '' : `${settings.rate}×`}</button>
           <button className="icon-btn" onClick={() => (audioMode ? audioRef.current && (audioRef.current.currentTime -= 10) : seek(idx - 1))} aria-label={audioMode ? 'Back 10 seconds' : 'Previous sentence'}><Icon name="prev" /></button>
-          <button className="play" onClick={() => (playing ? pause() : play())} aria-label={playing ? 'Pause' : 'Play'}>
+          <button className="play" onClick={() => { if (!playing) hfRef.current?.onManualResume(); playing ? pause() : play(); }} aria-label={playing ? 'Pause' : 'Play'}>
             <Icon name={playing ? 'pause' : 'play'} size={28} fill />
           </button>
           <button className="icon-btn" onClick={() => (audioMode ? audioRef.current && (audioRef.current.currentTime += 10) : seek(idx + 1))} aria-label={audioMode ? 'Forward 10 seconds' : 'Next sentence'}><Icon name="next" /></button>
@@ -459,6 +503,28 @@ function Player({ episode, onBack, go }) {
         onUndo={() => { deleteWord(ask.saved.id); setAsk({ ...ask, saved: null, undone: true }); }} />
     </div>
   );
+}
+
+const HF_FATAL = {
+  'not-allowed': 'Hands-free needs the microphone. Allow it for this site in Chrome (icon left of the address → Permissions), or open Sada directly in Chrome rather than inside another app.',
+  'service-not-allowed': 'This browser’s speech recognition isn’t available here. Hands-free works in Chrome on Android.',
+  'audio-capture': 'No microphone available. Another app may be using it.',
+  'language-not-supported': 'English speech recognition isn’t available in this browser.',
+  default: 'Hands-free stopped.',
+};
+
+function hfText(hf, settings) {
+  const wake = `“${settings.wakePhrase}”`, cont = `“${settings.resumePhrase}”`;
+  const k = hf?.kind;
+  if (k === 'hidden') return 'Screen off or app in the background: the browser may stop listening. Keep Sada open on screen.';
+  if (k === 'network-down') return 'Hands-free can’t reach the speech service. Check your connection; it keeps retrying.';
+  switch (hf?.state) {
+    case 'question': return 'Listening to your question…';
+    case 'thinking': return 'Thinking…';
+    case 'speaking': return 'Speaking the answer…';
+    case 'resume': return k === 'answer-failed' ? `No answer this time. Say ${cont} or ask again.` : `Say ${cont} to keep listening, or ${wake} to ask more.`;
+    default: return `Hands-free on. Say ${wake} and your question.${hf?.mode === 'on-device' ? ' (on-device recognition)' : ''}`;
+  }
 }
 
 function sentenceWith(sentences, word, from) {

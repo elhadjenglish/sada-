@@ -1,6 +1,7 @@
 import { chat, parseJson, friendlyError, logError, safetyIdFor, MODEL } from './_meta.js';
 import { guard, readBody, LIMITS } from './_guard.js';
 import { exerciseSchema, normalizeExercises, describeStats } from './_exercises.js';
+import { GRADE_SCHEMA, gradePrompt, decide } from './_grade.js';
 
 export const config = { maxDuration: 60 };
 
@@ -48,13 +49,7 @@ const SCHEMAS = {
     ),
   },
   // exercises: built per request by exerciseSchema() (word list + count), see _exercises.js
-  grade: {
-    name: 'Grade',
-    schema: S(
-      { correct: { type: 'boolean' }, score: { type: 'number' }, feedback_en: T, feedback_ar: T, better: T },
-      ['correct', 'score', 'feedback_en', 'feedback_ar', 'better']
-    ),
-  },
+  grade: GRADE_SCHEMA,
   ping: { name: 'Ping', schema: S({ ok: { type: 'boolean' } }, ['ok']) },
 };
 
@@ -121,7 +116,7 @@ Types and their fields:
 - context: sentence (contains the word), prompt ("What does 'X' mean here?"), options (4 short meanings), answer_index, explanation
 - fill: sentence containing exactly three underscores ___ where the word or its correct form goes, answer (exact form), accept (other correct forms, may be empty), hint (Arabic allowed)
 - order: answer (a 5 to 9 word sentence using the word)
-- translate: source_ar (a short Arabic sentence whose natural English translation uses the word), reference_en
+- translate: source_ar (a short Arabic sentence whose natural English translation uses the word), reference_en (a faithful translation of that exact Arabic: keep its person, tense and mood, e.g. an Arabic imperative stays an English imperative)
 - explain: prompt ("Explain what 'X' means and give your own example.")`,
     };
   },
@@ -133,21 +128,14 @@ Types and their fields:
     if (!ex || !['translate', 'explain'].includes(ex.type)) throw new BadRequest('Only translation and explanation answers are graded here.');
     const word = str(ex.word, 40, 'exercise.word', { required: true });
     const task = str(ex.prompt || ex.source_ar || ex.sentence, 500, 'exercise prompt', { required: true });
+    const sourceAr = ex.type === 'translate' ? str(ex.source_ar, 500, 'source_ar', { required: true }) : '';
     const reference = str(ex.reference_en, 300, 'reference');
     const answer = str(p.answer, 600, 'answer', { required: true });
     return {
       effort: 'low',
       maxTokens: 2000,
-      prompt: `Learner level: ${level}.
-Exercise type: ${ex.type}. Target word: "${word}".
-Task given to the learner: ${task}
-${reference ? `One reference answer: "${reference}"` : ''}
-Learner's answer: "${answer}"
-
-Judge the MEANING, not exact wording. Accept any natural, correct expression; ignore small spelling slips and missing punctuation.
-For "explain", the answer is correct if it shows they understand the word (an example sentence counts).
-${langRule(lang)}
-Fields: correct; score from 0 to 1; feedback_en / feedback_ar: one or two kind, specific sentences; better: a natural model answer in English.`,
+      grade: { type: ex.type, word, answer, lang },
+      prompt: gradePrompt({ type: ex.type, word, level, task, sourceAr, reference, answer, langRule: langRule(lang) }),
     };
   },
 };
@@ -159,12 +147,6 @@ function shapeResult(task, r, lang) {
     const out = { ...r, word: blank(r.word), lemma: blank(r.lemma) || blank(r.word) };
     if (lang === 'ar') { out.in_context_en = ''; out.answer_en = ''; }
     if (lang === 'en') { out.in_context_ar = ''; out.answer_ar = ''; }
-    return out;
-  }
-  if (task === 'grade') {
-    const out = { ...r, correct: r.correct === true, score: Math.max(0, Math.min(1, Number(r.score) || 0)) };
-    if (lang === 'ar') out.feedback_en = '';
-    if (lang === 'en') out.feedback_ar = '';
     return out;
   }
   return r;
@@ -225,7 +207,7 @@ export default async function handler(req, res) {
     let parsed;
     try { parsed = parseJson(r.text); } catch (e) { diag(r, 'parse=failed'); throw e; }
     diag(r, 'parse=ok');
-    const result = shapeResult(task, parsed, oneOf(payload.lang, LANGS, 'both'));
+    const result = task === 'grade' ? decide(parsed, spec.grade) : shapeResult(task, parsed, oneOf(payload.lang, LANGS, 'both'));
     return res.status(200).json({ result, model: r.model, configuredModel: MODEL, source: 'meta' });
   } catch (e) {
     logError(`ai:${task}`, e);

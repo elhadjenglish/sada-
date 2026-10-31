@@ -13,7 +13,7 @@ The name means *echo*: the words you catch keep coming back to you.
 | Tap any word to ask | Explanation tuned to the sentence and your CEFR level, in Arabic, simple English, or both | Muse Spark 1.3 (`/api/ai`, task `explain`) |
 | Ask with your voice | Tap the mic, ask, tap send. A 16 kHz WAV clip is transcribed, biased toward the words in the current sentence | Muse Voice Transcribe (`/api/transcribe`) → Muse Spark |
 | “Continue” | Saying “continue” resumes the episode | Muse Voice Transcribe |
-| Hands-free wake phrase (experimental) | Configurable phrase (default “Hey Sada”) using Chrome’s built-in recognizer while the app is open | Browser only; the question itself is answered by Muse Spark |
+| Hands-free listening | Wake phrase pauses the episode, question answered aloud, resume phrase continues at the same position. Works with Sada open and the screen on; not with the screen locked (see `docs/HANDS_FREE.md`) | Chrome speech recognition for the phrases; Muse Spark answers the question |
 | Vocabulary memory | Word, Arabic + English meaning, example, every sentence you heard it in, source, date, times asked, status | — |
 | Struggle detection | Asking about a saved word again, or failing it twice, marks it as struggling and brings it back sooner | — |
 | Spaced repetition | SM-2 variant; statuses New, Learning, Needs review, Mastered | — |
