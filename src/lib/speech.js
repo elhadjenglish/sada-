@@ -105,11 +105,13 @@ export function earcon(kind = 'wake') {
  * Uses on-device recognition when Chrome reports it available; otherwise Chrome's default service.
  * Emits interim and final transcripts; the controller decides what they mean and when to restart.
  */
-export function createRecognizer({ lang = 'en-US', onResult, onEnd, onError }) {
+export function createRecognizer({ lang = 'en-US', onResult, onEnd, onError, onEvent = () => {} }) {
   let rec = null;
   let running = false;
   let wanted = false;
   let mode = 'unknown';
+  let session = 0;
+  let endWatch = null;
 
   const modeReady = (async () => {
     try {
@@ -118,35 +120,65 @@ export function createRecognizer({ lang = 'en-US', onResult, onEnd, onError }) {
         mode = a === 'available' ? 'on-device' : 'browser-service';
       } else mode = 'browser-service';
     } catch { mode = 'browser-service'; }
+    onEvent({ type: 'mode', mode });
     return mode;
   })();
+
+  // Ends the current session exactly once, whether the browser sent "end" or not.
+  function ended(me, why) {
+    if (rec !== me || !running) return;
+    clearTimeout(endWatch);
+    running = false;
+    onEvent({ type: 'session-closed', session, why });
+    if (wanted) onEnd();
+  }
 
   function start() {
     wanted = true;
     if (!SR || running) return;
     const me = new SR();
     rec = me;
-    rec.lang = lang;
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
-    if (mode === 'on-device' && 'processLocally' in rec) rec.processLocally = true;
-    // Each handler ignores events from an older session, so a late onend can't mark a new session as stopped.
-    rec.onresult = (e) => {
+    session += 1;
+    me.lang = lang;
+    me.continuous = true; // Android Chrome still ends after each utterance; the controller restarts it
+    me.interimResults = true;
+    me.maxAlternatives = 1;
+    if (mode === 'on-device' && 'processLocally' in me) me.processLocally = true;
+    // Handlers ignore events from an older session, so a late "end" can't stop a new session.
+    me.onstart = () => { if (rec === me) onEvent({ type: 'session-start', session }); };
+    me.onresult = (e) => {
       if (rec !== me) return;
-      for (let i = e.resultIndex; i < e.results.length; i++) onResult(e.results[i][0].transcript, e.results[i].isFinal);
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r && r[0]) onResult(r[0].transcript, !!r.isFinal);
+      }
     };
-    rec.onerror = (e) => { if (rec === me) onError(e.error || 'unknown'); };
-    rec.onend = () => { if (rec !== me) return; running = false; if (wanted) onEnd(); };
-    try { rec.start(); running = true; } catch { running = false; setTimeout(() => wanted && onEnd(), 300); }
+    me.onerror = (e) => {
+      if (rec !== me) return;
+      onError(e.error || 'unknown');
+      // Some Android builds send "error" without a following "end": don't wait forever.
+      clearTimeout(endWatch);
+      endWatch = setTimeout(() => ended(me, `error:${e.error}`), 1500);
+    };
+    me.onend = () => ended(me, 'end');
+    try {
+      me.start();
+      running = true;
+    } catch {
+      // Usually "already started" while the previous session is still closing: try again shortly.
+      running = false;
+      onEvent({ type: 'start-retry', session });
+      setTimeout(() => { if (wanted && rec === me) start(); }, 400);
+    }
   }
 
   function stop() {
     wanted = false;
     running = false;
+    clearTimeout(endWatch);
     try { rec?.abort(); } catch {}
     rec = null;
   }
 
-  return { start, stop, get running() { return running; }, get mode() { return mode; }, modeReady };
+  return { start, stop, get running() { return running; }, get mode() { return mode; }, get session() { return session; }, modeReady };
 }

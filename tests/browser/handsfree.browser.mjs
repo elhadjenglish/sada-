@@ -1,5 +1,4 @@
-// Run with a production bundle served at http://localhost:8765 (index.html + app.js) and tone.wav (60 s, 16 kHz mono).
-// Requires Playwright. Uses a SIMULATED recognizer and speech synthesis: it does not test a real mic, Bluetooth or a locked screen.
+// Run against a production bundle served at http://localhost:8765 with tone.wav. Requires Playwright. SIMULATED recognizer and voice.
 // SIMULATED browser test: real Sada UI, real <audio> playback and real /api request path,
 // with the speech recognizer and speech synthesis replaced by controllable fakes.
 import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';

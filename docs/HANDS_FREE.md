@@ -10,6 +10,8 @@
 6. Sada speaks the answer (English with an English voice, Arabic with an Arabic voice if your phone has one) and shows it on screen. The microphone is **off while Sada speaks**, and anything that repeats the answer is ignored, so Sada can't obey its own voice.
 7. Say your **resume phrase** (default “Continue”). Episodes with real audio resume at the exact position; narrated episodes restart the interrupted sentence (the phone voice can't resume mid-sentence). You can also ask another question with the wake phrase first.
 
+Android Chrome ends a recognition session after every utterance, so Sada restarts it each time; Android plays its own short sound on each restart (Sada's tone only plays after the wake phrase). Sada looks for the wake phrase across the last few seconds of results, so “Hey” and “Sada” still count when Android splits them. Tap **Show what Sada hears** in the player to see each recognized text and Sada's decision.
+
 Errors are spoken or shown: no answer from Meta (“Sorry, I couldn't get an answer…”), microphone blocked, no microphone, speech service unreachable (keeps retrying with back-off), and the browser ending recognition sessions (restarted automatically).
 
 **Who hears your voice:** wake-phrase listening uses Chrome's speech recognition. If Chrome offers on-device recognition for English, Sada uses it and the status line says “on-device recognition”. Otherwise Chrome sends the audio to Google's speech service while hands-free is on. Meta only receives the text of your question. The mic button (push-to-talk) still uses Muse Voice Transcribe.

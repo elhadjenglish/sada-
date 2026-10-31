@@ -285,3 +285,6 @@ body:has(.player) .toast { bottom: calc(150px + env(safe-area-inset-bottom, 0px)
 .demo-banner { position: relative; z-index: 30; background: var(--sun); color: #3A2600; font-size: 13px; font-weight: 700; text-align: center; padding: 6px 12px; }
 .demo-tag { align-self: flex-start; display: inline-block; font-size: 12px; font-weight: 700; color: #3A2600; background: var(--sun); padding: 3px 10px; border-radius: 999px; }
 .unavailable { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--r-sm); border: 1.5px dashed var(--line); }
+.hint.live { display: flex; flex-direction: column; gap: 4px; }
+.hint.live .link.small { align-self: flex-start; padding: 2px 0; font-size: 13px; }
+.hf-log { max-height: 30vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; font-size: 13px; font-weight: 400; color: var(--ink); line-height: 1.4; display: flex; flex-direction: column; gap: 3px; }

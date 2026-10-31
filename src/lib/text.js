@@ -67,3 +67,47 @@ export function shuffle(arr) {
 }
 
 export const hasArabic = (s) => /[\u0600-\u06FF]/.test(String(s || ''));
+
+// ---- Speech phrase matching (wake / resume phrases) ----
+// Unicode-aware (works for phrases set in Arabic), ignores punctuation, case, apostrophes and Arabic diacritics.
+export const normSpeech = (s) =>
+  String(s ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\u064B-\u0652\u0670\u0640]/g, '')
+    .replace(/[’'`]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+
+const similarity = (a, b) => 1 - levenshtein(a, b) / Math.max(a.length, b.length, 1);
+
+/**
+ * Finds the LAST occurrence of a spoken phrase in recognized text.
+ * - Word by word, each word must be close to the phrase word ("hey Sarah", "hay Sada" pass; "hey Sam", "they said" don't).
+ * - Merged or split words compared without spaces ("Heysada", "hey sa da").
+ * - partial: stricter, for interim results, so a half-heard "hey sa…" doesn't count yet.
+ * Returns { rest, heard, end } (rest = normalized words after the phrase) or null.
+ */
+export function findPhrase(text, phrase, { partial = false } = {}) {
+  const words = normSpeech(text).split(' ').filter(Boolean);
+  const target = normSpeech(phrase).split(' ').filter(Boolean);
+  if (!words.length || !target.length) return null;
+  const perWord = partial ? 0.75 : 0.6;
+  const joined = target.join('');
+  const joinedMin = partial ? 0.9 : 0.8;
+  let hit = null;
+  for (let i = 0; i < words.length; i++) {
+    let end = -1;
+    if (i + target.length <= words.length && target.every((t, k) => similarity(words[i + k], t) >= perWord)) end = i + target.length;
+    else {
+      for (const n of [target.length - 1, target.length + 1]) {
+        if (n < 1 || i + n > words.length) continue;
+        const chunk = words.slice(i, i + n).join('');
+        if (chunk[0] === joined[0] && similarity(chunk, joined) >= joinedMin) { end = i + n; break; }
+      }
+    }
+    if (end > 0) hit = { end, heard: words.slice(i, end).join(' '), rest: words.slice(end).join(' ') };
+  }
+  return hit;
+}

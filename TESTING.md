@@ -4,7 +4,7 @@ There are two kinds of tests. They prove different things.
 
 ## 1. Mocked tests (done, in this repo)
 
-`npm test` runs `tests/server.test.mjs` (17), `tests/exercises.test.mjs` (13), `tests/grade.test.mjs` (13) and `tests/handsfree.test.mjs` (19). 62 tests in total. The first three run the real `/api/ai` and `/api/transcribe` code against a **local fake of Meta's API**; the hands-free tests drive the real controller with a **simulated** recognizer, player, voice and clock. They cover:
+`npm test` runs `tests/server.test.mjs` (17), `tests/exercises.test.mjs` (13), `tests/grade.test.mjs` (13), `tests/handsfree.test.mjs` (19) and `tests/wake.test.mjs` (23). 85 tests in total. The first three run the real `/api/ai` and `/api/transcribe` code against a **local fake of Meta's API**; the hands-free tests drive the real controller with a **simulated** recognizer, player, voice and clock. They cover:
 
 - Chat Completions request shape from Meta's docs: `developer` role, `response_format: json_schema`, `max_completion_tokens`, `reasoning_effort`, default temperature, hashed `safety_identifier`
 - Explanation language: `both` returns Arabic and English; `ar` / `en` return only that language
@@ -12,6 +12,7 @@ There are two kinds of tests. They prove different things.
 - Meta errors (400, 401, 429, 500, 504, empty answer, cut-off answer, non-JSON) become safe messages; the key never appears in a response
 - A Meta request that never answers ends with a timeout error before Vercel's 60-second limit
 - Hands-free (simulated): wake phrase on interim results pauses immediately; one-breath and two-step questions; question ends on silence; no question → resume; custom phrases and small mishearings; podcast speech ignored; only the question sent; one call per question; recognizer off while speaking; echo ignored; follow-up questions; resume at the saved position; AI failure and voice failure; session restarts and network back-off; permission denied; resume while thinking; visibility
+- Wake detection with realistic transcripts (simulated): “Good morning” and unrelated sentences don't pause or play Sada's tone; “Hey Sada”, “Hey, Sada.”, “HEY SADA!”, “Hey Sarah”, “hay Sada”, “Heysada”, “hey sa da” pause; a half-heard “hey sa…” doesn't; the phrase split across results or across Android sessions; old fragments don't combine; one-breath and multi-part questions; duplicate finals; Arabic custom phrase
 - Open-answer grading: the bug-report example (three valid answers to the “breath” translation all accepted), what the grader is told, minor grammar vs real errors, wrong/partial meaning, missing target word, other translations and explanations, feedback language. These check Sada's prompt and verdict logic; how the real model fills the rubric is only checked live (step 6b below)
 - Personal exercises: strict per-type schema; valid, Markdown-wrapped, malformed, cut-off and list-less answers; alternative field names and type spellings; words not in the list; incomplete items retried once then reported as an error; every accepted exercise also passes the app's own validator; logs contain no key or user content
 - Input validation, method/origin/content-type/size checks, per-IP and global rate limits
@@ -22,6 +23,10 @@ There are two kinds of tests. They prove different things.
 Real Sada screens, real `<audio>` playback and the real `/api` request path, with the **speech recognizer and speech synthesis simulated**. Checks the whole flow: wake → pause → only the question sent → answer spoken (Arabic with an Arabic voice) → recognizer off while speaking → echo ignored → “Continue” → playback restarted at the paused position with no seek (`pause()` and `play()` both at the same time stamp) → narrated episode back on the same sentence; plus session restarts, API failure and microphone denial.
 
 **Not verified anywhere:** a real microphone, real speech recognition accuracy, Bluetooth earphones, the locked screen, Android's start beeps, and real Meta answers in this flow.
+
+### Android-like recognition in the real UI (`tests/browser/android-pattern.browser.mjs`, 15 checks, all pass)
+
+Fake recognizer that ends the session after every utterance, like Android Chrome. Checks: mic button still works; “Good morning” and unrelated sentences don't pause and play no Sada tone; sessions restart; “Hey” and “Sada” in separate sessions pause; question from the next session sent alone; spoken answer; “Continue”; “Hey, Sada, what does reliable mean?”; “Hey Sarah”; the on-screen log; recovery from an error with no “end” event.
 
 ### Browser checks (headless Chromium, phone-sized, mocked or demo answers)
 
@@ -82,14 +87,20 @@ Lines contain only counts and fixed field names: no words, sentences, answers, o
 
 Do this on the deployed Vercel site, opened directly in Chrome.
 
-1. Connect the earphones. Open an episode, tap play, then tap the ear button. Allow the microphone. **Expect:** “Hands-free on. Say “Hey Sada”…”.
-2. While it plays, say “Hey Sada, what does reliable mean?”. **Expect:** pause + rising tone straight away, then the spoken answer in the earphones.
-3. Say “Continue”. **Expect:** the episode carries on where it stopped.
-4. Say only “Hey Sada”, wait for the tone, then ask a question. Then try saying nothing after the tone: it should resume after about 8 seconds.
-5. **Listen to the podcast sound quality** before and after turning hands-free on. If it becomes muffled or phone-call-like, the earphones switched to the call profile (see `docs/HANDS_FREE.md`). Note whether Chrome uses the earphone mic or the phone mic (try asking with the phone in your pocket).
-6. Change both phrases in Settings and repeat step 2 with the new ones.
-7. Turn off Wi-Fi and mobile data and ask a question. **Expect:** a spoken apology or a “can't reach the speech service” status, and “Continue” still works once you're back online.
-8. **Screen locked:** start hands-free, lock the phone, ask a question. **Expected to fail** in the browser. Unlock and check that the status recovers and listening resumes.
-9. Note anything odd: system beeps when listening restarts, missed wake phrases, answers triggered by the podcast itself.
+1. Open an episode, tap play, tap the ear button, then tap **Show what Sada hears**.
+2. Say **“Good morning”**. Expect: the log shows `Heard “Good morning” → not the wake phrase`, the episode keeps playing. You may still hear a short system sound: that is Android's speech-recognition sound (see below), not Sada's.
+3. Say **“Hey Sada”**. Expect: `→ wake phrase ✓`, the episode pauses, Sada's short rising tone.
+4. Say **“what does reliable mean”**. Expect: `Question sent: “what does reliable mean”`, then the spoken answer.
+5. Say **“Continue”**. Expect: `→ resume phrase ✓`, the episode carries on where it stopped.
+6. Say **“Hey Sada, what does reliable mean?”** in one breath, then “Continue”.
+7. Turn hands-free off and use the purple mic button once, to confirm it still works.
+8. Optional: Bluetooth sound quality, screen locked, and no internet, as before. Screen locked is still expected to fail in the browser.
 
-Tell me the results of steps 2, 5 and 8 in particular: they decide whether we build the native app next.
+**If “Hey Sada” still doesn't pause, the log tells us why. Send me the lines it shows:**
+- **No “Heard …” lines at all** → Chrome isn't returning any text. Look for `Recognition error: …` lines.
+- **Text in Arabic or French** (e.g. `Heard “هاي سادا”`) → Chrome is recognizing in your phone's voice-typing language, not English. Either set the wake phrase in Settings to exactly what it shows, or switch Google voice typing to English.
+- **English text, but a different spelling** (e.g. “Hey Sa da”, “Hazada”) → tell me what it shows; we can widen the match safely.
+
+The log contains only what the microphone heard while hands-free was on. It stays on the phone, isn't saved, and disappears when hands-free stops.
+
+**About the sound on every word:** Android Chrome ends its listening session after each thing you say, and Sada must start a new one to keep listening. Android plays its own speech-recognition sound when that happens. A web page can't turn that sound off; a native Android app (see `docs/HANDS_FREE.md`) can avoid it.

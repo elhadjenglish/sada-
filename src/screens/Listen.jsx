@@ -139,6 +139,8 @@ function Player({ episode, onBack, go }) {
   const [voice, setVoice] = useState(null);
   const [handsFree, setHandsFree] = useState(false);
   const [hf, setHf] = useState(null); // hands-free status from the controller
+  const [hfLog, setHfLog] = useState([]); // diagnostics: kept in memory on this phone only, cleared when hands-free stops
+  const [showHfLog, setShowHfLog] = useState(false);
   const [typed, setTyped] = useState('');
 
   const idxRef = useRef(idx);
@@ -348,11 +350,19 @@ function Player({ episode, onBack, go }) {
   useEffect(() => {
     if (!handsFree) return;
     let wakeLock = null;
+    const debug = (ev) => setHfLog((log) => {
+      const line = { ...ev, at: new Date().toLocaleTimeString('en-GB') };
+      const last = log[log.length - 1];
+      // successive partial results of one utterance replace each other
+      if (ev.type === 'heard' && !ev.final && last?.type === 'heard' && !last.final && last.outcome === ev.outcome) return [...log.slice(0, -1), line];
+      return [...log, line].slice(-25);
+    });
     const lock = async () => { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {} };
     const rec = createRecognizer({
       onResult: (t, fin) => ctrl.onTranscript(t, fin),
       onEnd: () => ctrl.onRecognitionEnd(),
       onError: (code) => ctrl.onRecognitionError(code),
+      onEvent: debug,
     });
     const ctrl = createHandsFree({
       recognizer: rec,
@@ -381,6 +391,7 @@ function Player({ episode, onBack, go }) {
       ask: (q) => live.current.askAbout({ question: q }),
       speak: (script) => speakSegments(script),
       earcon,
+      onDebug: debug,
       onStatus: (st) => {
         setHf(st);
         if (st.kind === 'no-question') toast('No question heard. Back to the episode.');
@@ -399,6 +410,7 @@ function Player({ episode, onBack, go }) {
       ctrl.stop();
       hfRef.current = null;
       setHf(null);
+      setHfLog([]);
       wakeLock?.release?.().catch(() => {});
     };
   }, [handsFree]); // eslint-disable-line
@@ -427,7 +439,13 @@ function Player({ episode, onBack, go }) {
         ) : <span style={{ width: 40 }} />}
       </header>
 
-      {handsFree && <p className="hint live" role="status" aria-live="polite">{hfText(hf, settings)}</p>}
+      {handsFree && (
+        <div className="hint live">
+          <p role="status" aria-live="polite">{hfText(hf, settings)}</p>
+          <button className="link small" onClick={() => setShowHfLog(!showHfLog)} aria-expanded={showHfLog}>{showHfLog ? 'Hide' : 'Show'} what Sada hears</button>
+          {showHfLog && <HfLog log={hfLog} />}
+        </div>
+      )}
       {!handsFree && s.words.length === 0 && <p className="hint">Tap any word you don’t know. Or tap the mic and ask.</p>}
 
       <article className="transcript" lang="en">
@@ -525,6 +543,34 @@ function hfText(hf, settings) {
     case 'resume': return k === 'answer-failed' ? `No answer this time. Say ${cont} or ask again.` : `Say ${cont} to keep listening, or ${wake} to ask more.`;
     default: return `Hands-free on. Say ${wake} and your question.${hf?.mode === 'on-device' ? ' (on-device recognition)' : ''}`;
   }
+}
+
+const OUTCOME = {
+  'wake-phrase': 'wake phrase ✓', 'not-wake-phrase': 'not the wake phrase', 'question-part': 'question', 'question-partial': 'question…',
+  'resume-phrase': 'resume phrase ✓', 'not-resume-phrase': 'not the resume phrase', 'own-voice': 'Sada’s own voice, ignored',
+  ignored: 'ignored (Sada was speaking)', 'ignored-thinking': 'ignored (waiting for the answer)',
+};
+function hfLine(e) {
+  switch (e.type) {
+    case 'heard': return `${e.final ? 'Heard' : 'Hearing'} “${String(e.text).slice(0, 80)}” → ${OUTCOME[e.outcome] || e.outcome}`;
+    case 'state': return `State: ${e.from} → ${e.to}`;
+    case 'question': return `Question sent: “${String(e.text).slice(0, 80)}”`;
+    case 'mode': return `Recognition: ${e.mode === 'on-device' ? 'on this phone' : 'Chrome speech service'}`;
+    case 'session-start': return `Listening session ${e.session} started`;
+    case 'session-closed': return `Session ${e.session} ended (${e.why})`;
+    case 'start-retry': return 'Recognizer busy, retrying';
+    case 'error': return `Recognition error: ${e.code}`;
+    default: return null;
+  }
+}
+function HfLog({ log }) {
+  const lines = log.map((e) => ({ at: e.at, text: hfLine(e) })).filter((l) => l.text);
+  return (
+    <div className="hf-log" aria-label="What Sada hears">
+      {lines.length === 0 ? <p className="muted small">Nothing yet. Say something.</p> : lines.map((l, i) => <p key={i}><span className="muted">{l.at}</span> {l.text}</p>)}
+      <p className="fine">Stays on this phone, isn’t saved, and is cleared when hands-free stops.</p>
+    </div>
+  );
 }
 
 function sentenceWith(sentences, word, from) {
