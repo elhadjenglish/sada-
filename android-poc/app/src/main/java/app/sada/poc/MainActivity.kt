@@ -300,7 +300,7 @@ class MainActivity : Activity() {
             val hb = if (Diag.lastHeartbeat > 0) (now - Diag.lastHeartbeat) / 1000 else -1
             stateView.text = if (Diag.serviceRunning) Diag.stateText else "Not running"
             qaView.text = if (Diag.lastTranscript.isEmpty()) "" else "You asked: “${Diag.lastTranscript}”\nSada: ${Diag.lastAnswer}"
-            val words = SavedWords.all(this)
+            val words = SavedWords.all(this@MainActivity) // inside the Runnable, plain "this" is the Runnable
             savedView.text = if (words.isEmpty()) "None yet. Ask about a word and Sada saves it here."
                 else "${words.size} saved. Latest: " + words.takeLast(5).reversed().joinToString(", ") { it.optString("term") }
             status.text = buildString {
