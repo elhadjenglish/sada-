@@ -10,6 +10,10 @@ import { nativeAvailable, nativePickAudio, onAudioPicked, nativeCancel, nativeSt
 import { Icon, Sheet, Ar, Bi, Spinner, LevelTag, toast, DemoTag } from '../ui.jsx';
 import { ProgressBar } from './Today.jsx';
 
+const IMPORT_PREFIX = 'https://appassets.androidplatform.net/imports/';
+// A saved meaning is a short label: the first sentence of an answer, clipped (the server limits its length).
+const shortMeaning = (t, n) => { const x = String(t || '').replace(/\s+/g, ' ').trim(); const first = x.split(/(?<=[.!?])\s/)[0] || x; return first.length <= n ? first : first.slice(0, n - 1).trimEnd() + '…'; };
+
 export default function Listen({ episodeId, setEpisodeId, go }) {
   const s = useStore();
   const all = [...s.customEpisodes, ...EPISODES];
@@ -152,14 +156,17 @@ function Player({ episode, onBack, go }) {
   const s = useStore();
   const { settings, profile } = s;
   const sentences = useMemo(() => splitSentences(episode.text), [episode.text]);
-  const audioMode = !!episode.audioUrl;
+  // Audio imported from the phone is played by the native player (volume buttons, questions, Continue), like narrated
+  // episodes; only publisher links still use the page's own audio element.
+  const importedFile = (episode.audioUrl || '').startsWith(IMPORT_PREFIX) ? episode.audioUrl.slice(IMPORT_PREFIX.length) : '';
+  const audioMode = !!episode.audioUrl && !(nativeAvailable && importedFile);
   // Android app: the narration, microphone, questions and spoken answers run in the native audio service
   // (double-press Volume Up, automatic end-of-speech, Muse Voice Transcribe, Muse Spark, Android voice).
   const nativeMode = nativeAvailable && !audioMode;
   const [nat, setNat] = useState(null);
   const saved = s.progress[episode.id];
 
-  const [idx, setIdx] = useState(() => (saved && !saved.done ? Math.min(saved.idx || 0, sentences.length - 1) : 0));
+  const [idx, setIdx] = useState(() => (saved && !saved.done ? Math.max(0, Math.min(saved.idx || 0, sentences.length - 1)) : 0));
   const [playing, setPlaying] = useState(false);
   const [finished, setFinished] = useState(false);
   const [time, setTime] = useState({ t: 0, d: 0 });
@@ -249,7 +256,7 @@ function Player({ episode, onBack, go }) {
       setPlaying(true);
       const st = nativeState();
       if (st && st.loaded && st.episodeId === episode.id && !st.ended) nativeResume();
-      else nativePlay({ id: episode.id, title: episode.title, text: episode.text, startFraction: fractionOfIdx(sentences, idxRef.current), lang: profile.explainLang, level: profile.level });
+      else nativePlay({ id: episode.id, title: episode.title, text: episode.text, audioFile: importedFile, startFraction: importedFile ? (saved?.fraction || 0) : fractionOfIdx(sentences, idxRef.current), lang: profile.explainLang, level: profile.level });
       return;
     }
     if (audioMode) { audioRef.current?.play().catch(() => toast('This audio link could not be played. Check that it points to an audio file.')); return; }
@@ -465,6 +472,11 @@ function Player({ episode, onBack, go }) {
 
   const newlyCaught = Math.max(0, s.words.length - caughtAtStart.current);
 
+  const fileSeekBy = (sec) => {
+    const d = nat?.durationMs || 0;
+    if (d) nativeSeek(Math.min(0.98, Math.max(0, ((nat.positionMs || 0) + sec * 1000) / d)));
+  };
+
   /* --- Android app: follow the native audio service (position, play state, questions and answers) --- */
   useEffect(() => {
     if (!nativeMode) return undefined;
@@ -476,7 +488,11 @@ function Player({ episode, onBack, go }) {
       const mine = st.episodeId === episode.id && st.loaded;
       if (mine) {
         if (st.playing !== playingRef.current) { playingRef.current = st.playing; setPlaying(st.playing); }
-        if (st.durationMs > 0) {
+        if (importedFile && st.durationMs > 0 && Math.abs(st.positionMs - lastSaveRef.current) > 5000) {
+          lastSaveRef.current = st.positionMs;
+          setProgress(episode.id, { fraction: st.positionMs / st.durationMs, done: false });
+        }
+        if (sentences.length && st.durationMs > 0) {
           const j = Math.min(sentences.length - 1, idxOfFraction(sentences, st.positionMs / st.durationMs));
           if (j !== idxRef.current) { idxRef.current = j; setIdx(j); }
         }
@@ -490,7 +506,7 @@ function Player({ episode, onBack, go }) {
         const sentence = ev.sentence || sentences[si] || '';
         const r = {
           word: ev.term || '', lemma: ev.term || '', pos: '', ipa: '',
-          meaning_en: ev.answer_en || '', meaning_ar: ev.answer_ar || '', answer_en: ev.answer_en || '', answer_ar: ev.answer_ar || '',
+          meaning_en: shortMeaning(ev.answer_en, 160), meaning_ar: shortMeaning(ev.answer_ar, 80), answer_en: ev.answer_en || '', answer_ar: ev.answer_ar || '',
           example: ev.example || '', is_vocab: !!(ev.isVocab && ev.term), _source: 'meta',
         };
         let savedInfo = null;
@@ -573,6 +589,10 @@ function Player({ episode, onBack, go }) {
             <input type="range" className="scrub" min={0} max={time.d || 0} step={1} value={time.t}
               onChange={(e) => { if (audioRef.current) audioRef.current.currentTime = Number(e.target.value); }} aria-label="Playback position" />
           </>
+        ) : importedFile ? (
+          <input type="range" className="scrub" min={0} max={Math.max(1, Math.round((nat?.durationMs || 0) / 1000))} step={1}
+            value={Math.round((nat?.episodeId === episode.id ? nat.positionMs : 0) / 1000)}
+            onChange={(e) => { const d = nat?.durationMs || 0; if (d) nativeSeek(Math.min(0.98, (Number(e.target.value) * 1000) / d)); }} aria-label="Playback position" />
         ) : (
           <button className="scrub-bar" aria-label="Jump in episode"
             onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); seek(Math.floor(((e.clientX - r.left) / r.width) * sentences.length)); }}>
@@ -581,11 +601,11 @@ function Player({ episode, onBack, go }) {
         )}
         <div className="ctrl-row">
           <button className="rate" onClick={cycleRate} aria-label={`Speed ${settings.rate}x`} disabled={audioMode || nativeMode}>{audioMode || nativeMode ? '' : `${settings.rate}×`}</button>
-          <button className="icon-btn" onClick={() => (audioMode ? audioRef.current && (audioRef.current.currentTime -= 10) : seek(idx - 1))} aria-label={audioMode ? 'Back 10 seconds' : 'Previous sentence'}><Icon name="prev" /></button>
+          <button className="icon-btn" onClick={() => (audioMode ? audioRef.current && (audioRef.current.currentTime -= 10) : importedFile ? fileSeekBy(-10) : seek(idx - 1))} aria-label={audioMode || importedFile ? 'Back 10 seconds' : 'Previous sentence'}><Icon name="prev" /></button>
           <button className="play" onClick={() => { if (!playing) hfRef.current?.onManualResume(); playing ? pause() : play(); }} aria-label={playing ? 'Pause' : 'Play'}>
             <Icon name={playing ? 'pause' : 'play'} size={28} fill />
           </button>
-          <button className="icon-btn" onClick={() => (audioMode ? audioRef.current && (audioRef.current.currentTime += 10) : seek(idx + 1))} aria-label={audioMode ? 'Forward 10 seconds' : 'Next sentence'}><Icon name="next" /></button>
+          <button className="icon-btn" onClick={() => (audioMode ? audioRef.current && (audioRef.current.currentTime += 10) : importedFile ? fileSeekBy(10) : seek(idx + 1))} aria-label={audioMode || importedFile ? 'Forward 10 seconds' : 'Next sentence'}><Icon name="next" /></button>
           <button className={`mic ${voice?.phase === 'rec' ? 'rec' : ''}`} onClick={() => (voice?.phase === 'rec' ? stopVoice() : !voice && startVoice())}
             aria-label={voice?.phase === 'rec' ? 'Send question' : 'Ask with your voice'} style={voice?.phase === 'rec' ? { '--lvl': voice.level } : undefined}>
             {voice?.phase === 'sending' ? <span className="spinner light" /> : <Icon name={voice?.phase === 'rec' ? 'send' : 'mic'} />}

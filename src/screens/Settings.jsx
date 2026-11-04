@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useStore, setSettings, setProfile, resetAll, storageWorks } from '../lib/store.js';
 import { LEVELS } from '../lib/episodes.js';
 import { pingAI } from '../lib/ai.js';
-import { nativeAvailable, nativeServer, nativeSetServer, nativeOpenDiagnostics } from '../lib/native.js';
+import { nativeAvailable, nativeOpenDiagnostics } from '../lib/native.js';
 import { Icon, Spinner } from '../ui.jsx';
 
 export default function Settings({ onClose }) {
@@ -78,20 +78,6 @@ export default function Settings({ onClose }) {
           <input type="checkbox" checked={settings.autoSave} onChange={(e) => setSettings({ autoSave: e.target.checked })} />
           <span>Save words automatically when I ask about them</span>
         </label>
-      </section>
-
-      <section className="set-group">
-        <p className="label">AI connection</p>
-        {nativeAvailable && (
-          <>
-            <label className="label" htmlFor="s-server">Sada server address</label>
-            <input id="s-server" className="input" defaultValue={nativeServer()} placeholder="https://your-sada.vercel.app" autoCapitalize="none"
-              onBlur={(e) => nativeSetServer(e.target.value.trim())} />
-          </>
-        )}
-        <button className="btn secondary" onClick={test} disabled={check?.busy}>{check?.busy ? <Spinner /> : 'Test connection'}</button>
-        {check?.ok && <p className="t-mint small">{check.ok}</p>}
-        {check?.err && <p className="error small">{check.err}</p>}
       </section>
 
       <section className="set-group">

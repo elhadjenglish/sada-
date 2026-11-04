@@ -19,7 +19,7 @@ export default function Practice({ go }) {
   const [aiMode, setAiMode] = useState(true);
   const [exSource, setExSource] = useState(null);
   const results = useRef({});
-  const lang = s.profile.explainLang;
+  const lang = 'en'; // Practice is for learning English: always English, whatever the explanation language
   const targets = useMemo(() => pickTargets(s.words, 6), [phase === 'start' ? s.words : null]); // eslint-disable-line
 
   if (s.words.length === 0) {
@@ -48,8 +48,8 @@ export default function Practice({ go }) {
     }
     setPhase('loading');
     try {
-      const payload = targets.map((w) => ({ word: w.word, meaning_en: w.meaning_en, meaning_ar: w.meaning_ar, context: w.contexts?.[0]?.sentence || '', struggling: isStruggling(w) }));
-      const r = await askAI('exercises', { words: payload, level: s.profile.level, lang: s.profile.explainLang, count: Math.min(8, Math.max(4, Math.round(targets.length * 1.4))) });
+      const payload = targets.map((w) => ({ word: w.word, meaning_en: clip(w.meaning_en, 160), context: clip(w.contexts?.[0]?.sentence || '', 400), struggling: isStruggling(w) }));
+      const r = await askAI('exercises', { words: payload, level: s.profile.level, lang: 'en', count: Math.min(8, Math.max(4, Math.round(targets.length * 1.4))) });
       const ex = clean(r?.exercises, s.words);
       if (ex.length < 2) throw new Error('The exercises came back incomplete. Try again, or use the offline drill.');
       setExSource(r._source);
@@ -145,6 +145,9 @@ export default function Practice({ go }) {
 
 /* ---------- building and validating exercises ---------- */
 
+// Saved meanings can be long (a spoken answer saved as a meaning): the server limits their length, so send short ones.
+const clip = (t, n) => { const x = String(t || '').replace(/\s+/g, ' ').trim(); return x.length <= n ? x : x.slice(0, n - 1).trimEnd() + '…'; };
+
 function clean(list, vocab) {
   const out = [];
   for (const e of Array.isArray(list) ? list : []) {
@@ -183,7 +186,7 @@ function localDrill(targets, all, lang) {
     }
     const sent = w.example || w.contexts?.[0]?.sentence;
     const re = new RegExp(`\\b${esc(w.word)}\\b`, 'i');
-    if (sent && re.test(sent)) ex.push({ type: 'fill', word: w.word, wordId: w.id, sentence: sent.replace(re, '___'), answer: w.word, hint: w.meaning_ar || w.meaning_en });
+    if (sent && re.test(sent)) ex.push({ type: 'fill', word: w.word, wordId: w.id, sentence: sent.replace(re, '___'), answer: w.word, hint: w.meaning_en || '' });
   }
   return shuffle(ex).slice(0, 8);
 }

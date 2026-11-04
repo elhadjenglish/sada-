@@ -547,3 +547,21 @@ test('an unknown language falls back safely', async () => {
   const out = await call(ai, { task: 'explain', payload: { ...EXPLAIN, lang: 'xx' } });
   assert.equal(out.status, 200);
 });
+
+// ---- Practice: English only; saved meanings never break the request ----
+
+test('exercises: the prompt is English-only whatever language is sent, with no Arabic or translation tasks', async () => {
+  reset({ content: { exercises: [] } });
+  await call(ai, { task: 'exercises', payload: { words: [{ word: 'reliable', meaning_en: 'can be trusted', context: 'The bus is very reliable.' }], level: 'B1', lang: 'fr' } });
+  const prompt = JSON.stringify(calls.at(-1)?.json?.messages || '');
+  const hit = prompt.match(/.{0,60}(Arabic|French|source_ar|translate).{0,60}/i);
+  assert.ok(!hit, 'non-English text in the exercise prompt: ' + (hit && hit[0]));
+  assert.ok(prompt.includes('simple English'));
+});
+
+test('exercises: a long saved meaning_ar is still refused by validation (data safety unchanged); the app no longer sends it', async () => {
+  reset({ content: { exercises: [] } });
+  const out = await call(ai, { task: 'exercises', payload: { words: [{ word: 'reliable', meaning_en: 'x', meaning_ar: 'y'.repeat(120) }], level: 'B1' } });
+  assert.equal(out.status, 400);
+  assert.match(out.body.error, /meaning_ar is too long/);
+});

@@ -77,7 +77,8 @@ test('request: strict per-type schema, every field required, word limited to the
   const rf = calls[0].response_format;
   assert.equal(rf.type, 'json_schema');
   const items = rf.json_schema.schema.properties.exercises.items;
-  assert.equal(items.anyOf.length, 6);
+  assert.equal(items.anyOf.length, 5, 'Practice is English-only: no Arabic translation exercises');
+  assert.ok(!JSON.stringify(items).includes('source_ar'));
   for (const v of items.anyOf) {
     assert.deepEqual([...v.required].sort(), Object.keys(v.properties).sort(), 'every property required');
     assert.equal(v.additionalProperties, false);

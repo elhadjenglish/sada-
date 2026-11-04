@@ -16,6 +16,15 @@ class SadaApi(rawBaseUrl: String) {
     class Failure(val kind: AnswerPlan.Failure, val detail: String) : Exception(detail)
 
     companion object {
+        /**
+         * The server the app uses: the build's SADA_SERVER (default https://sada-chi.vercel.app). Only the developer
+         * diagnostics screen can override it ("serverOverride"); normal users are never asked for an address.
+         */
+        fun configured(ctx: android.content.Context): String {
+            val override = ctx.getSharedPreferences("stage0", android.content.Context.MODE_PRIVATE).getString("serverOverride", "") ?: ""
+            return normalize(if (override.isNotBlank()) override else BuildConfig.SADA_SERVER)
+        }
+
         /** "your-sada.vercel.app" → "https://your-sada.vercel.app"; trailing slashes removed. */
         fun normalize(raw: String): String {
             val t = raw.trim().trimEnd('/')

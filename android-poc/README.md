@@ -463,3 +463,10 @@ The launcher screen is now `WebActivity`: the React app (onboarding, Today, List
 - **Audio files:** Listen → Add your own → "Choose an audio file from your phone". The file is copied into the app and played by the in-app player; a transcript is optional. Imported audio uses the in-app player, so double-press Volume Up works for narrated episodes only. The mic button still asks about anything you hear.
 - **Explanation language:** English, العربية, Français, Español, हिन्दी, Português, Deutsch, 中文 (podcasts stay English). Used for Muse Spark explanations, spoken answers, saved words and practice feedback. Needs a voice for that language on the phone to speak answers; otherwise the answer is shown on screen.
 - **Cancel:** while the microphone records a question, the player shows Cancel: the recording is discarded (nothing is transcribed or sent) and the podcast resumes.
+
+## Y. Server address (developer only)
+
+Normal users are never asked for a server address. The app uses `SADA_SERVER`, built in at compile time; default **https://sada-chi.vercel.app**.
+- **Where it is defined:** `android-poc/app/build.gradle` (`buildConfigField "String", "SADA_SERVER"`, default after `?:`).
+- **Change it without editing code:** GitHub repo → Settings → Secrets and variables → Actions → **Variables** → New variable `SADA_SERVER` = `https://your-address`. Then Actions → "Android Stage 0: build debug APK" → Run workflow, and install the new APK.
+- **Testing a different server on one phone:** Settings → Audio diagnostics → server field (stored as `serverOverride`).

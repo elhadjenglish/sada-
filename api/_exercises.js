@@ -24,7 +24,6 @@ export function exerciseSchema(words, count) {
             obj({ type: { type: 'string', enum: ['context'] }, word, sentence: str, prompt: str, options: four, answer_index: idx, explanation: str }),
             obj({ type: { type: 'string', enum: ['fill'] }, word, sentence: str, answer: str, accept: { type: 'array', items: str }, hint: str }),
             obj({ type: { type: 'string', enum: ['order'] }, word, answer: str }),
-            obj({ type: { type: 'string', enum: ['translate'] }, word, source_ar: str, reference_en: str }),
             obj({ type: { type: 'string', enum: ['explain'] }, word, prompt: str }),
           ],
         },

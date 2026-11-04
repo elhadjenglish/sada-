@@ -7,7 +7,14 @@ android {
     namespace 'app.sada.poc'
     compileSdk 34
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
+        // Developer-only: the Sada server the app talks to. Change it with the SADA_SERVER environment variable
+        // (GitHub: Settings > Secrets and variables > Actions > Variables > SADA_SERVER) and rebuild.
+        buildConfigField "String", "SADA_SERVER", "\"${System.getenv('SADA_SERVER') ?: 'https://sada-chi.vercel.app'}\""
         applicationId 'app.sada.poc'
         minSdk 26
         targetSdk 34

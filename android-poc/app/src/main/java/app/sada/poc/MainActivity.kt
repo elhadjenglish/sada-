@@ -210,7 +210,7 @@ class MainActivity : Activity() {
         col.addView(text("Sada server", 17f, true))
         col.addView(text("Your Sada web app address (the Vercel one), e.g. https://your-sada.vercel.app. Questions go there; the Meta key stays on that server.", 12f))
         val server = EditText(this).apply {
-            setText(prefs.getString("server", ""))
+            setText(prefs.getString("serverOverride", ""))
             hint = "https://your-sada.vercel.app"
             isSingleLine = true
         }
@@ -218,7 +218,7 @@ class MainActivity : Activity() {
         col.addView(button("Save address and test the connection") {
             val url = SadaApi.normalize(server.text.toString())
             server.setText(url)
-            prefs.edit().putString("server", url).apply()
+            prefs.edit().putString("serverOverride", url).apply()
             toast("Testing…")
             Thread {
                 val msg = try { "Connected: Muse Spark answered (model ${SadaApi(url).ping()})." }

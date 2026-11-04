@@ -16,8 +16,6 @@ export const nativeSeek = (fraction) => N?.seek(String(fraction));
 export const nativeAsk = () => N?.ask();
 export const nativeStop = () => N?.stop();
 export const nativeSetPrefs = (lang, level) => N?.setPrefs(lang, level);
-export const nativeServer = () => (N ? N.getServer() : '');
-export const nativeSetServer = (url) => N?.setServer(url);
 export const nativeOpenDiagnostics = () => N?.openDiagnostics();
 export const nativeCancel = () => N?.cancel();
 /** Speaks English text with the phone's own voice (the WebView has no working speechSynthesis). */

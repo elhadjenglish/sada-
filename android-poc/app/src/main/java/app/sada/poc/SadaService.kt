@@ -826,7 +826,7 @@ class SadaService : Service() {
         val q = capture
         capture = null
         val prefs = getSharedPreferences("stage0", Context.MODE_PRIVATE)
-        val api = SadaApi(prefs.getString("server", "") ?: "")
+        val api = SadaApi(SadaApi.configured(this))
         val lang = prefs.getString("lang", "en") ?: "en"
         val level = prefs.getString("level", "B1") ?: "B1"
         val positionMs = savedPositionMs
@@ -937,6 +937,7 @@ class SadaService : Service() {
     /** Podcast context that is really known: test-episode title and nearby text (approximate), else the title only. */
     private fun questionContext(positionMs: Long): EpisodeContext {
         if (episodeText.isNotEmpty()) return EpisodeContext.of(episodeTitle, positionMs, episodeDurationMs, episodeText)
+        if (episodeTitle.isNotEmpty()) return EpisodeContext.none(episodeTitle) // imported audio: no transcript to quote
         val isTest = Diag.source.startsWith("test episode")
         if (!isTest) return EpisodeContext.none(if (Diag.source.startsWith("your audio")) "the learner's own audio file" else "")
         val idx = TestEpisode.index(this) ?: return EpisodeContext.none("Sada test episode")

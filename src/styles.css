@@ -292,3 +292,8 @@ body:has(.player) .toast { bottom: calc(150px + env(safe-area-inset-bottom, 0px)
 /* Pronunciation (speaker) buttons: a slightly larger icon and a comfortable touch target */
 .ask-word, .say-word { min-height: 48px; padding: 6px 8px; cursor: pointer; }
 .ask-word svg, .say-word svg { width: 26px; height: 26px; flex: none; }
+
+/* Long titles (e.g. imported file names) stay inside their containers */
+.ep-title { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.player-title { min-width: 0; flex: 1 1 auto; }
+.player-title .ep-title.sm { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -22,7 +22,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
-import android.widget.EditText
 import java.io.File
 import java.io.FilterInputStream
 import java.util.Locale
@@ -86,7 +85,6 @@ class WebActivity : Activity() {
         }
         web.addJavascriptInterface(Bridge(), "SadaNative")
         web.loadUrl("https://$host/index.html")
-        askServerIfNeeded()
     }
 
     private fun asset(path: String): WebResourceResponse {
@@ -123,19 +121,7 @@ class WebActivity : Activity() {
 
     private val prefs get() = getSharedPreferences("stage0", Context.MODE_PRIVATE)
 
-    private fun server() = SadaApi.normalize(prefs.getString("server", "") ?: "")
-
-    private fun askServerIfNeeded() {
-        if (server().isNotBlank()) return
-        val input = EditText(this).apply { hint = "https://your-sada.vercel.app"; isSingleLine = true }
-        AlertDialog.Builder(this)
-            .setTitle("Sada server address")
-            .setMessage("Enter the address of your Sada web app (the Vercel address). Your questions and explanations are answered there; the Meta key stays on that server. You can change it later in Settings.")
-            .setView(input)
-            .setCancelable(false)
-            .setPositiveButton("Save") { _, _ -> prefs.edit().putString("server", SadaApi.normalize(input.text.toString())).apply() }
-            .show()
-    }
+    private fun server() = SadaApi.configured(this)
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
@@ -248,7 +234,7 @@ class WebActivity : Activity() {
         var status = 200
         var reason = "OK"
         val headers = mutableMapOf("Accept-Ranges" to "bytes", "Cache-Control" to "no-cache")
-        val m = range?.let { Regex("bytes=(\d*)-(\d*)").matchEntire(it.trim()) }
+        val m = range?.let { Regex("bytes=(\\d*)-(\\d*)").matchEntire(it.trim()) }
         if (m != null) {
             val a = m.groupValues[1]
             val b = m.groupValues[2]
@@ -306,6 +292,14 @@ class WebActivity : Activity() {
         val text = o.optString("text")
         val fraction = o.optDouble("startFraction", 0.0).coerceIn(0.0, 0.98)
         NativeApp.error = ""
+        val audioFile = o.optString("audioFile")
+        if (audioFile.isNotEmpty()) { // audio imported from the phone: same player, same volume-key control
+            val f = File(File(filesDir, "imports"), audioFile)
+            val duration = if (audioFile.contains('/') || !f.isFile) 0L else audioDurationMs(f)
+            if (duration <= 0L) { NativeApp.error = "This audio file could not be opened. Try importing it again."; return }
+            launchService(f, id, title, "", duration, (fraction * duration).toLong())
+            return
+        }
         NativeApp.preparing = if (EpisodeAudio.fileFor(this, id, text).exists()) "" else "Preparing the narration with your phone's voice (first time for this episode)…"
         Thread {
             val (file, err) = EpisodeAudio.ensure(this, id, text)
@@ -315,6 +309,14 @@ class WebActivity : Activity() {
             runOnUiThread { launchService(file, id, title, text, duration, (fraction * duration).toLong()) }
         }.start()
     }
+
+    private fun audioDurationMs(f: File): Long = try {
+        val r = android.media.MediaMetadataRetriever()
+        try {
+            r.setDataSource(f.absolutePath)
+            r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        } finally { r.release() }
+    } catch (_: Exception) { 0L }
 
     private fun launchService(file: java.io.File, id: String, title: String, text: String, duration: Long, startMs: Long) {
         val earbuds = headphonesConnected()
@@ -385,8 +387,6 @@ class WebActivity : Activity() {
         }
         @JavascriptInterface fun stop() { runOnUiThread { serviceAction(SadaService.ACTION_STOP) } }
         @JavascriptInterface fun setPrefs(lang: String, level: String) { prefs.edit().putString("lang", lang).putString("level", level).apply() }
-        @JavascriptInterface fun getServer(): String = server()
-        @JavascriptInterface fun setServer(url: String) { prefs.edit().putString("server", SadaApi.normalize(url)).apply() }
         @JavascriptInterface fun openDiagnostics() { runOnUiThread { startActivity(Intent(this@WebActivity, MainActivity::class.java)) } }
 
         /** The web page's own requests to the Sada server's api routes: sent from here (same server, same routes), result handed back. */

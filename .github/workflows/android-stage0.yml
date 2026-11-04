@@ -116,6 +116,7 @@ jobs:
         working-directory: android-poc
         env:
           VERSION_CODE: ${{ github.run_number }}
+          SADA_SERVER: ${{ vars.SADA_SERVER }}
         run: |
           set -euo pipefail
           gradle --no-daemon --stacktrace assembleDebug
