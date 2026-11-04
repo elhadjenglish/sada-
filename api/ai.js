@@ -74,6 +74,12 @@ export function askLang(settingLang, question) {
   return settingLang;
 }
 
+// Only questions explicitly about the podcast use its text ("Was this word mentioned?", "Where did the speaker use
+// it?", "What did they mean in that sentence?"). Ordinary questions ("What does reliable mean?") take the shortest
+// path: no podcast text, no podcast rules, a smaller prompt.
+const ASKS_PODCAST = /\b(podcast|episode|speaker|narrator|mention(ed)?|did (he|she|they|the speaker) (say|use|mean)|was (it|this|that) (said|used)|in (that|this|the) sentence|that sentence|in (this|that) context|where (did|was)|what did (he|she|they|the speaker) mean)\b/i;
+export const asksAboutPodcast = (question) => ASKS_PODCAST.test(String(question || ''));
+
 const squash = (t) => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
 const num = (v, min, max) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : null);
@@ -89,19 +95,21 @@ const TASKS = {
     const pos = num(p.positionSec, 0, 36000);
     const where = pos == null ? '' : `${Math.floor(pos / 60)}:${String(Math.floor(pos % 60)).padStart(2, '0')}`;
     const detail = ASKS_DETAIL.test(question);
+    const podcast = asksAboutPodcast(question);
+    const context = !podcast ? '' : `${episode ? `Podcast: "${episode}"${where ? `, paused at ${where}` : ''}.\n` : ''}${recent
+      ? `Podcast text around the pause point (APPROXIMATE position, may be a sentence or two off): "${recent}"
+- If the podcast text contains the word: say what it means in that sentence first.
+- If it does NOT contain the word: say briefly that it is not in the part of the podcast available here, then give its usual meaning.`
+      : '- No podcast text is available: say honestly that you cannot check the podcast here, then answer generally. Never invent what was said.'}`;
     return {
       effort: 'low',
       maxTokens: 2000,
-      prompt: `Learner level: ${level}. The learner is listening to an English podcast and asked a question by voice. Your answer is SPOKEN to them, then the podcast continues, so be brief.
-${episode ? `Podcast: "${episode}"${where ? `, paused at ${where}` : ''}.` : ''}
-${recent ? `Podcast text around the pause point (APPROXIMATE position, may be a sentence or two off): "${recent}"` : 'No podcast text is available. Do not claim to know what the podcast said and never invent a sentence from it.'}
+      prompt: `Learner level: ${level}. An English learner listening to a podcast asked by voice. Your answer is SPOKEN, then the podcast continues, so be brief.
 Their question (speech transcription, may contain small errors): "${question}"
-
+${context ? context + '\n' : ''}
 How to answer:
 - Answer directly. No introduction, do not repeat the question, no filler.
 - ${detail ? 'They asked for more detail: up to 5 sentences (about 80 words) per language.' : 'Default: 1–2 sentences, about 25 words per language.'}
-- If it is about a word or expression and the podcast text above contains it: say what it means in that sentence first.
-- If podcast text is available but does NOT contain the word: say briefly that it is not in the part of the podcast available here, then give its usual meaning.
 - Add one short example only when it genuinely helps understanding.
 - If the question is unclear, say briefly what you understood and ask them to repeat it.
 - Plain spoken sentences: no lists, no markdown, no emojis, no IPA.
@@ -109,7 +117,7 @@ ${langRule(lang)}
 Fields:
 - is_vocab: true if the question is about an English word or expression worth saving
 - term: that word or expression as the learner would save it, otherwise ""
-- sentence: the sentence from the podcast text above that contains the term, copied exactly; "" if it is not there (never invent one)
+- sentence: ${podcast && recent ? 'the sentence from the podcast text above that contains the term, copied exactly; "" if it is not there (never invent one)' : '""'}
 - answer_en / answer_ar: the spoken answer
 - example: one short English example sentence using the term, otherwise ""`,
     };
@@ -207,8 +215,9 @@ function shapeResult(task, r, lang, payload = {}) {
   if (task === 'ask') {
     const used = askLang(lang, String(payload.question || ''));
     const out = { ...r, term: blank(r.term), sentence: blank(r.sentence), lang_used: used };
-    // Never pass on a "podcast sentence" that is not actually in the podcast text that was sent.
-    if (out.sentence && !squash(payload.recent).includes(squash(out.sentence))) out.sentence = '';
+    // Never pass on a "podcast sentence" that is not actually in the podcast text that was used (none for ordinary questions).
+    const usedText = asksAboutPodcast(payload.question) ? payload.recent : '';
+    if (out.sentence && !squash(usedText).includes(squash(out.sentence))) out.sentence = '';
     if (used === 'ar') out.answer_en = '';
     if (used === 'en') out.answer_ar = '';
     return out;
