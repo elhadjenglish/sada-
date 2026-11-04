@@ -62,34 +62,54 @@ const SCHEMAS = {
   ping: { name: 'Ping', schema: S({ ok: { type: 'boolean' } }, ['ok']) },
 };
 
+// The learner can ask for the other language in the question itself ("...in Arabic?", "بالعربية"), or for more detail.
+const ASKS_ARABIC = /\b(in arabic|arabic please|explain in arabic|say it in arabic)\b|بالعرب|بالعربية|بالعربي|عربي/i;
+const ASKS_ENGLISH = /\b(in english|english please)\b|بالانجليزي|بالإنجليزية|بالانجليزية/i;
+const ASKS_DETAIL = /\b(more detail|in detail|detailed|explain more|tell me more|elaborate|more about|longer|full explanation)\b/i;
+
+/** The answer language for this question: the setting, unless the question explicitly asks for the other one. */
+export function askLang(settingLang, question) {
+  if (settingLang !== 'ar' && ASKS_ARABIC.test(question)) return 'ar';
+  if (settingLang !== 'en' && ASKS_ENGLISH.test(question)) return 'en';
+  return settingLang;
+}
+
+const squash = (t) => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
 const num = (v, min, max) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : null);
 
 const TASKS = {
   // Hands-free question from the Android app: transcribed speech + whatever podcast context is really known.
   ask(p) {
     const level = oneOf(p.level, LEVELS, 'B1');
-    const lang = oneOf(p.lang, LANGS, 'both');
+    const lang = askLang(oneOf(p.lang, LANGS, 'en'), String(p.question || ''));
     const question = str(p.question, 500, 'question', { required: true });
     const episode = str(p.episode, 120, 'episode');
     const recent = str(p.recent, 800, 'recent');
     const pos = num(p.positionSec, 0, 36000);
     const where = pos == null ? '' : `${Math.floor(pos / 60)}:${String(Math.floor(pos % 60)).padStart(2, '0')}`;
+    const detail = ASKS_DETAIL.test(question);
     return {
       effort: 'low',
       maxTokens: 2000,
-      prompt: `Learner level: ${level}. The learner is listening to an English podcast and asked a question by voice; the answer will be SPOKEN to them, then the podcast continues.
+      prompt: `Learner level: ${level}. The learner is listening to an English podcast and asked a question by voice. Your answer is SPOKEN to them, then the podcast continues, so be brief.
 ${episode ? `Podcast: "${episode}"${where ? `, paused at ${where}` : ''}.` : ''}
-${recent ? `Text around the pause point (APPROXIMATE position, may be a sentence or two off): "${recent}"` : 'No transcript of the podcast is available; do not invent what was said.'}
+${recent ? `Podcast text around the pause point (APPROXIMATE position, may be a sentence or two off): "${recent}"` : 'No podcast text is available. Do not claim to know what the podcast said and never invent a sentence from it.'}
 Their question (speech transcription, may contain small errors): "${question}"
 
-Answer the question helpfully for an English learner. If it is about a word or expression, explain what it means here (use the text above if it contains it) and give one short example.
-Keep it short enough to listen to: at most 3 sentences (about 45 words) per language. Plain sentences only: no lists, no markdown, no emojis, no IPA.
-If the question is unclear, say briefly what you understood and ask them to repeat it.
+How to answer:
+- Answer directly. No introduction, do not repeat the question, no filler.
+- ${detail ? 'They asked for more detail: up to 5 sentences (about 80 words) per language.' : 'Default: 1–2 sentences, about 25 words per language.'}
+- If it is about a word or expression and the podcast text above contains it: say what it means in that sentence first.
+- If podcast text is available but does NOT contain the word: say briefly that it is not in the part of the podcast available here, then give its usual meaning.
+- Add one short example only when it genuinely helps understanding.
+- If the question is unclear, say briefly what you understood and ask them to repeat it.
+- Plain spoken sentences: no lists, no markdown, no emojis, no IPA.
 ${langRule(lang)}
 Fields:
 - is_vocab: true if the question is about an English word or expression worth saving
 - term: that word or expression as the learner would save it, otherwise ""
-- sentence: the sentence from the text above that contains the term, copied exactly, otherwise "" (never invent one)
+- sentence: the sentence from the podcast text above that contains the term, copied exactly; "" if it is not there (never invent one)
 - answer_en / answer_ar: the spoken answer
 - example: one short English example sentence using the term, otherwise ""`,
     };
@@ -183,11 +203,14 @@ Types and their fields:
 
 const blank = (s) => (typeof s === 'string' ? s.trim() : '');
 // Keeps the client contract stable and fills a missing language from the other only as a last resort.
-function shapeResult(task, r, lang) {
+function shapeResult(task, r, lang, payload = {}) {
   if (task === 'ask') {
-    const out = { ...r, term: blank(r.term), sentence: blank(r.sentence) };
-    if (lang === 'ar') out.answer_en = '';
-    if (lang === 'en') out.answer_ar = '';
+    const used = askLang(lang, String(payload.question || ''));
+    const out = { ...r, term: blank(r.term), sentence: blank(r.sentence), lang_used: used };
+    // Never pass on a "podcast sentence" that is not actually in the podcast text that was sent.
+    if (out.sentence && !squash(payload.recent).includes(squash(out.sentence))) out.sentence = '';
+    if (used === 'ar') out.answer_en = '';
+    if (used === 'en') out.answer_ar = '';
     return out;
   }
   if (task === 'explain') {
@@ -269,7 +292,7 @@ export default async function handler(req, res) {
         return res.status(502).json({ error: 'The AI’s answer was incomplete, so Sada didn’t use it. Please try again.' });
       }
     }
-    const result = task === 'grade' ? decide(parsed, spec.grade) : shapeResult(task, parsed, oneOf(payload.lang, LANGS, 'both'));
+    const result = task === 'grade' ? decide(parsed, spec.grade) : shapeResult(task, parsed, oneOf(payload.lang, LANGS, task === 'ask' ? 'en' : 'both'), payload);
     return res.status(200).json({ result, model: r.model, configuredModel: MODEL, source: 'meta' });
   } catch (e) {
     logError(`ai:${task}`, e);
