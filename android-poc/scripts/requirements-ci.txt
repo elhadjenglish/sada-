@@ -1,0 +1,7 @@
+# Python tools used ONLY by the CI build (keyword conversion and the informational check).
+# sherpa-onnx itself is pinned in prepare-model.sh from SHERPA_VERSION in the workflow,
+# so the Python tool always matches the Android library version.
+click==8.1.7          # sherpa-onnx-cli command-line interface
+sentencepiece==0.2.0  # BPE tokenizer for the English GigaSpeech keyword model
+pypinyin==0.51.0      # imported by sherpa-onnx's text2token module (used for Chinese models only)
+numpy==1.26.4         # used by kws_check.py

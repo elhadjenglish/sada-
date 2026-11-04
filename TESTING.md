@@ -4,7 +4,7 @@ There are two kinds of tests. They prove different things.
 
 ## 1. Mocked tests (done, in this repo)
 
-`npm test` runs `tests/server.test.mjs` (17), `tests/exercises.test.mjs` (13), `tests/grade.test.mjs` (13), `tests/handsfree.test.mjs` (19) and `tests/wake.test.mjs` (23). 85 tests in total. The first three run the real `/api/ai` and `/api/transcribe` code against a **local fake of Meta's API**; the hands-free tests drive the real controller with a **simulated** recognizer, player, voice and clock. They cover:
+`npm test` runs `tests/server.test.mjs`, `tests/exercises.test.mjs`, `tests/grade.test.mjs`, `tests/handsfree.test.mjs` and `tests/wake.test.mjs`: **98 tests** (November 2026 review). The Android logic tests (Java, simulated audio) run in GitHub Actions as part of the APK build: **102 tests**. The first three run the real `/api/ai` and `/api/transcribe` code against a **local fake of Meta's API**; the hands-free tests drive the real controller with a **simulated** recognizer, player, voice and clock. They cover:
 
 - Chat Completions request shape from Meta's docs: `developer` role, `response_format: json_schema`, `max_completion_tokens`, `reasoning_effort`, default temperature, hashed `safety_identifier`
 - Explanation language: `both` returns Arabic and English; `ar` / `en` return only that language
@@ -104,3 +104,31 @@ Do this on the deployed Vercel site, opened directly in Chrome.
 The log contains only what the microphone heard while hands-free was on. It stays on the phone, isn't saved, and disappears when hands-free stops.
 
 **About the sound on every word:** Android Chrome ends its listening session after each thing you say, and Sada must start a new one to keep listening. Android plays its own speech-recognition sound when that happens. A web page can't turn that sound off; a native Android app (see `docs/HANDS_FREE.md`) can avoid it.
+
+
+## Final review (November 2026): what is and is not verified
+
+| Kind | Result |
+|---|---|
+| Server tests against a local **fake** of Meta's API (`npm test`) | 98 / 98 pass |
+| Android logic tests (Java, simulated audio) | 102 / 102 pass |
+| Android Kotlin static checks | clean (compiled for real only by GitHub Actions) |
+| Production web build (`vite build`) | **not run here** (no network for dependencies); Vercel builds on deploy |
+| **Real Meta API** | **not verified here** (no key, no network). Verify after deploying (below). |
+| Physical device | not verified by these tests |
+
+**Live check after deploying** (proves the real Meta API works with your key):
+1. In the Android app: enter the address, tap **Save address and test the connection**. "Connected: Muse Spark answered (model …)" means a real Muse Spark call succeeded.
+2. Ask one question by voice. In **Share report**, the lines `transcript` and `answer` show a real Muse Voice Transcribe and Muse Spark result.
+3. In Vercel → your project → Logs: lines `[ai] op=ask model=… schema=ok` confirm the answer matched the required shape. Logs never contain prompts, answers or keys.
+
+**Changes in this review:**
+- `api/transcribe.js`:
+  - the size limit now fits the longest allowed recording (30 s at 24 kHz, base64);
+  - WAV files are read chunk by chunk (extra chunks such as LIST, odd sizes, streaming data sizes);
+  - Meta receives a canonical WAV.
+- `api/_meta.js` + `api/ai.js`: every AI answer is checked against the exact schema requested. One retry, then an honest error. The model fallback and the no-`response_format` fallback can no longer pass a different shape to the apps.
+- `api/ai.js`: whitespace-only text counts as missing.
+- Android:
+  - the server address is normalised (`https://` added; plain `http://` refused with a clear message);
+  - every report shows the app version and source revision.

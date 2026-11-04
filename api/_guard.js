@@ -78,7 +78,10 @@ export async function guard(req, res, { maxBodyBytes, limits }) {
     res.status(403).json({ error: 'This API only serves the Sada app.' });
     return null;
   }
-  if (!origin && process.env.REQUIRE_ORIGIN !== 'false' && process.env.VERCEL_ENV === 'production') {
+  // The Android app is not a browser and sends no Origin; it identifies itself with this header instead. Neither
+  // header is a secret (both can be sent by any script); the per-IP and global daily limits below protect the cost.
+  const appClient = String(req.headers?.['x-sada-client'] || '').toLowerCase() === 'android';
+  if (!origin && !appClient && process.env.REQUIRE_ORIGIN !== 'false' && process.env.VERCEL_ENV === 'production') {
     res.status(403).json({ error: 'This API only serves the Sada app.' });
     return null;
   }

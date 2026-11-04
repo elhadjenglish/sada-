@@ -133,6 +133,36 @@ export async function chat({ instructions, prompt, schema, effort = 'low', maxTo
   throw new Error('Meta request failed.');
 }
 
+/**
+ * Checks a parsed answer against the JSON schema that was requested. Needed because the model fallback and the
+ * no-response_format fallback above cannot guarantee the shape; the clients must never receive a different one.
+ * Supports what Sada's schemas use: object (required, properties), string, boolean, number/integer, array, enum.
+ * Returns a list of problems (empty = valid).
+ */
+export function schemaErrors(schema, value, path = '$') {
+  if (!schema || typeof schema !== 'object') return [];
+  const errs = [];
+  if (schema.enum && !schema.enum.includes(value)) errs.push(`${path}: not one of the allowed values`);
+  switch (schema.type) {
+    case 'object': {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return [`${path}: expected an object`];
+      for (const k of schema.required || []) if (!(k in value)) errs.push(`${path}.${k}: missing`);
+      for (const [k, sub] of Object.entries(schema.properties || {})) if (k in value) errs.push(...schemaErrors(sub, value[k], `${path}.${k}`));
+      break;
+    }
+    case 'array':
+      if (!Array.isArray(value)) return [`${path}: expected an array`];
+      if (schema.items) value.forEach((v, i) => errs.push(...schemaErrors(schema.items, v, `${path}[${i}]`)));
+      break;
+    case 'string': if (typeof value !== 'string') errs.push(`${path}: expected text`); break;
+    case 'boolean': if (typeof value !== 'boolean') errs.push(`${path}: expected true/false`); break;
+    case 'number': if (typeof value !== 'number' || !Number.isFinite(value)) errs.push(`${path}: expected a number`); break;
+    case 'integer': if (!Number.isInteger(value)) errs.push(`${path}: expected a whole number`); break;
+    default: break;
+  }
+  return errs;
+}
+
 export function parseJson(text) {
   try { return JSON.parse(text); } catch {}
   const cleaned = String(text).replace(/```json|```/g, '');

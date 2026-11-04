@@ -85,3 +85,31 @@ The AI layer returns JSON, which the client validates before use: malformed exer
 ## Built during the Meta hackathon
 
 All code in this repository, the episode scripts, and the design were created during the hackathon.
+
+## Android app: hands-free questions (Muse Voice Transcribe + Muse Spark)
+
+The Android app (folder `android-poc/`) uses the same two server functions as the web app:
+- `POST /api/transcribe`: the recorded question (16 kHz mono WAV, base64) → text, with Muse Voice Transcribe.
+- `POST /api/ai` with `task: "ask"`: the question text plus real podcast context (title, position, nearby text only when known, marked approximate) → a short spoken answer from Muse Spark in Arabic, English or both, and the word to save if it was about vocabulary.
+
+The app sends `X-Sada-Client: android` instead of a browser Origin. Like Origin, it is not a secret; the per-IP and global daily rate limits protect the cost. The Meta key never leaves the server.
+
+**Environment variables (Vercel → Settings → Environment Variables):** unchanged.
+- **Required:** `MODEL_API_KEY`.
+- **Optional:** `META_MODEL`, `META_FALLBACK_MODEL`, `META_ASR_MODEL`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `ALLOWED_ORIGINS`, `SAFETY_ID_SALT`, `RL_*`, `GLOBAL_DAILY_CAP`.
+
+**Deploy:** push to GitHub (Vercel deploys automatically), then open the app's address once to check that it works.
+
+
+## Deployment checklist (final MVP)
+
+1. **Vercel → Settings → Environment Variables:**
+   - **`MODEL_API_KEY`:** required.
+   - **Upstash Redis:** strongly recommended (Vercel Marketplace → Upstash adds `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`). Without it, rate limits and the daily cap are counted per server instance, so they are weaker.
+   - **`SAFETY_ID_SALT`:** set to a random string.
+   - **Everything else:** optional (see `.env.example`).
+2. **Deploy:** push to GitHub; Vercel builds the web app and the `api/` functions.
+3. **Android:** `android-poc.zip` in the repository root is what GitHub Actions builds. The artifact on the Actions page is the debug APK.
+4. **Live check:** see TESTING.md, "Final review".
+
+`X-Sada-Client: android` identifies the Android app; it is not a password. Protection against abuse comes from the per-IP and daily rate limits.

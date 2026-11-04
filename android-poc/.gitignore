@@ -1,0 +1,10 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.jks
+*.keystore
+# Fetched by CI at build time, never committed
+app/src/main/java/com/k2fsa/
+app/src/main/jniLibs/
+app/src/main/assets/

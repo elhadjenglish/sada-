@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.env.local
+.vercel
+
+# Android: build outputs and local / signing files (never commit)
+android-poc/.gradle
+android-poc/build
+android-poc/app/build
+android-poc/local.properties
+*.keystore
+*.jks
+*.p12

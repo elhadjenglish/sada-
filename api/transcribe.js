@@ -3,20 +3,57 @@ import { guard, readBody, LIMITS } from './_guard.js';
 
 export const config = { maxDuration: 30 };
 
-const MAX_SECONDS = 30;
+export const MAX_SECONDS = 30;
+const RATES = [16000, 24000];
+// Largest accepted request: 30 s at 24 kHz mono 16-bit (1,440,000 bytes of audio) plus a generous allowance for
+// header chunks, base64-encoded (x 4/3), plus the JSON around it. Vercel accepts request bodies up to 4.5 MB.
+export const MAX_BODY_BYTES = Math.ceil((MAX_SECONDS * 24000 * 2 + 64 * 1024) * 4 / 3) + 16 * 1024;
 
-// Checks the clip is what the browser recorder produces and Meta accepts:
-// RIFF/WAVE, PCM, mono, 16-bit, 16 or 24 kHz.
-function inspectWav(buf) {
-  if (buf.length < 44) return 'The recording was empty.';
-  if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') return 'The recording is not a WAV file.';
-  if (buf.toString('ascii', 12, 16) !== 'fmt ') return 'The recording format is not supported.';
-  const format = buf.readUInt16LE(20), channels = buf.readUInt16LE(22), rate = buf.readUInt32LE(24), bits = buf.readUInt16LE(34);
-  if (format !== 1 || channels !== 1 || bits !== 16 || ![16000, 24000].includes(rate)) return 'The recording must be mono 16-bit WAV at 16 or 24 kHz.';
-  const seconds = (buf.length - 44) / (rate * 2);
-  if (seconds < 0.3) return 'The recording was too short. Ask your question, then tap send.';
-  if (seconds > MAX_SECONDS) return `Keep questions under ${MAX_SECONDS} seconds.`;
-  return null;
+/**
+ * Reads a WAV file chunk by chunk (RIFF allows extra chunks such as LIST, in any order, with odd sizes padded).
+ * Accepts what both Sada clients record and Meta's Speech-to-text documents: PCM, mono, 16-bit, 16 or 24 kHz.
+ * Returns { error } or { rate, pcm } where pcm is the audio data only.
+ */
+export function readWav(buf) {
+  if (buf.length < 12) return { error: 'The recording was empty.' };
+  if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') return { error: 'The recording is not a WAV file.' };
+  let fmt = null, pcm = null;
+  for (let i = 12; i + 8 <= buf.length; ) {
+    const id = buf.toString('ascii', i, i + 4);
+    let size = buf.readUInt32LE(i + 4);
+    const start = i + 8;
+    if (id === 'data') {
+      // Some recorders write 0 or 0xFFFFFFFF while streaming: then the audio runs to the end of the file.
+      if (size === 0 || size === 0xffffffff || start + size > buf.length) size = buf.length - start;
+      pcm = buf.subarray(start, start + size);
+      if (fmt) break;
+    } else if (id === 'fmt ') {
+      if (size < 16 || start + size > buf.length) return { error: 'The recording format is not supported.' };
+      fmt = { format: buf.readUInt16LE(start), channels: buf.readUInt16LE(start + 2), rate: buf.readUInt32LE(start + 4), bits: buf.readUInt16LE(start + 14) };
+    } else if (start + size > buf.length) {
+      break; // truncated extra chunk
+    }
+    i = start + size + (size & 1); // chunks are padded to an even length
+  }
+  if (!fmt || !pcm) return { error: 'The recording format is not supported.' };
+  if (fmt.format !== 1 || fmt.channels !== 1 || fmt.bits !== 16 || !RATES.includes(fmt.rate)) {
+    return { error: 'The recording must be mono 16-bit PCM WAV at 16 or 24 kHz.' };
+  }
+  const usable = pcm.subarray(0, pcm.length - (pcm.length % 2));
+  const seconds = usable.length / (fmt.rate * 2);
+  if (seconds < 0.3) return { error: 'The recording was too short.' };
+  if (seconds > MAX_SECONDS) return { error: `Keep questions under ${MAX_SECONDS} seconds.` };
+  return { rate: fmt.rate, pcm: usable };
+}
+
+/** A canonical 44-byte-header WAV (fmt + data only): exactly the simple layout Meta's examples use. */
+export function canonicalWav(rate, pcm) {
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVE', 8);
+  h.write('fmt ', 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
+  h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
 }
 
 const cleanList = (v, maxItems, maxLen) =>
@@ -26,7 +63,7 @@ const LANGUAGES = new Set(['English', 'Arabic', 'French']);
 
 export default async function handler(req, res) {
   const ok = await guard(req, res, {
-    maxBodyBytes: 1_400_000, // 30 s of 16 kHz mono 16-bit WAV, base64-encoded, plus JSON
+    maxBodyBytes: MAX_BODY_BYTES, // 30 s at 24 kHz, base64-encoded, plus headers and JSON
     limits: [
       { name: 'asr-min', max: LIMITS.asrMinute(), windowSec: 60 },
       { name: 'asr-day', max: LIMITS.asrDay(), windowSec: 86400 },
@@ -39,9 +76,9 @@ export default async function handler(req, res) {
   if (!body || typeof body.audio !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(body.audio)) {
     return res.status(400).json({ error: 'No audio received.' });
   }
-  const bytes = Buffer.from(body.audio, 'base64');
-  const problem = inspectWav(bytes);
-  if (problem) return res.status(400).json({ error: problem });
+  const wav = readWav(Buffer.from(body.audio, 'base64'));
+  if (wav.error) return res.status(400).json({ error: wav.error });
+  const bytes = canonicalWav(wav.rate, wav.pcm);
 
   const request = { model: ASR_MODEL, mode: 'PUSH_TO_TALK', audioEncoding: 'WAV' };
   const langs = cleanList(body.languages, 3, 20).filter((l) => LANGUAGES.has(l));

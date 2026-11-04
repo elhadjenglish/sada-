@@ -1,4 +1,4 @@
-import { chat, parseJson, friendlyError, logError, safetyIdFor, MODEL } from './_meta.js';
+import { chat, parseJson, schemaErrors, friendlyError, logError, safetyIdFor, MODEL } from './_meta.js';
 import { guard, readBody, LIMITS } from './_guard.js';
 import { exerciseSchema, normalizeExercises, describeStats } from './_exercises.js';
 import { GRADE_SCHEMA, gradePrompt, decide } from './_grade.js';
@@ -17,6 +17,7 @@ const str = (v, max, name, { required = false } = {}) => {
   }
   if (typeof v !== 'string') throw new BadRequest(`${name} must be text.`);
   const s = v.replace(/\s+/g, ' ').trim();
+  if (!s && required) throw new BadRequest(`Missing ${name}.`); // whitespace only counts as missing
   if (s.length > max) throw new BadRequest(`${name} is too long.`);
   return s;
 };
@@ -48,12 +49,52 @@ const SCHEMAS = {
       ['is_vocab', 'word', 'lemma', 'pos', 'ipa', 'meaning_en', 'meaning_ar', 'in_context_en', 'in_context_ar', 'example', 'answer_en', 'answer_ar']
     ),
   },
+  // Spoken question from the Android app (hands-free): a short answer to be read aloud.
+  ask: {
+    name: 'SpokenAnswer',
+    schema: S(
+      { is_vocab: { type: 'boolean' }, term: T, sentence: T, answer_en: T, answer_ar: T, example: T },
+      ['is_vocab', 'term', 'sentence', 'answer_en', 'answer_ar', 'example']
+    ),
+  },
   // exercises: built per request by exerciseSchema() (word list + count), see _exercises.js
   grade: GRADE_SCHEMA,
   ping: { name: 'Ping', schema: S({ ok: { type: 'boolean' } }, ['ok']) },
 };
 
+const num = (v, min, max) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : null);
+
 const TASKS = {
+  // Hands-free question from the Android app: transcribed speech + whatever podcast context is really known.
+  ask(p) {
+    const level = oneOf(p.level, LEVELS, 'B1');
+    const lang = oneOf(p.lang, LANGS, 'both');
+    const question = str(p.question, 500, 'question', { required: true });
+    const episode = str(p.episode, 120, 'episode');
+    const recent = str(p.recent, 800, 'recent');
+    const pos = num(p.positionSec, 0, 36000);
+    const where = pos == null ? '' : `${Math.floor(pos / 60)}:${String(Math.floor(pos % 60)).padStart(2, '0')}`;
+    return {
+      effort: 'low',
+      maxTokens: 2000,
+      prompt: `Learner level: ${level}. The learner is listening to an English podcast and asked a question by voice; the answer will be SPOKEN to them, then the podcast continues.
+${episode ? `Podcast: "${episode}"${where ? `, paused at ${where}` : ''}.` : ''}
+${recent ? `Text around the pause point (APPROXIMATE position, may be a sentence or two off): "${recent}"` : 'No transcript of the podcast is available; do not invent what was said.'}
+Their question (speech transcription, may contain small errors): "${question}"
+
+Answer the question helpfully for an English learner. If it is about a word or expression, explain what it means here (use the text above if it contains it) and give one short example.
+Keep it short enough to listen to: at most 3 sentences (about 45 words) per language. Plain sentences only: no lists, no markdown, no emojis, no IPA.
+If the question is unclear, say briefly what you understood and ask them to repeat it.
+${langRule(lang)}
+Fields:
+- is_vocab: true if the question is about an English word or expression worth saving
+- term: that word or expression as the learner would save it, otherwise ""
+- sentence: the sentence from the text above that contains the term, copied exactly, otherwise "" (never invent one)
+- answer_en / answer_ar: the spoken answer
+- example: one short English example sentence using the term, otherwise ""`,
+    };
+  },
+
   explain(p) {
     const level = oneOf(p.level, LEVELS, 'B1');
     const lang = oneOf(p.lang, LANGS, 'both');
@@ -143,6 +184,12 @@ Types and their fields:
 const blank = (s) => (typeof s === 'string' ? s.trim() : '');
 // Keeps the client contract stable and fills a missing language from the other only as a last resort.
 function shapeResult(task, r, lang) {
+  if (task === 'ask') {
+    const out = { ...r, term: blank(r.term), sentence: blank(r.sentence) };
+    if (lang === 'ar') out.answer_en = '';
+    if (lang === 'en') out.answer_ar = '';
+    return out;
+  }
   if (task === 'explain') {
     const out = { ...r, word: blank(r.word), lemma: blank(r.lemma) || blank(r.word) };
     if (lang === 'ar') { out.in_context_en = ''; out.answer_en = ''; }
@@ -203,10 +250,25 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: 'The AI’s exercises were incomplete twice, so Sada didn’t use them. Try again in a moment, or use the offline drill.' });
     }
 
-    const r = await chat({ ...base, schema: SCHEMAS[task] });
-    let parsed;
-    try { parsed = parseJson(r.text); } catch (e) { diag(r, 'parse=failed'); throw e; }
-    diag(r, 'parse=ok');
+    // The answer must match the requested schema exactly (the fallbacks in chat() cannot guarantee it).
+    // One retry, then an honest error: a malformed answer is never passed on to the app.
+    const schema = SCHEMAS[task];
+    let r, parsed;
+    for (let attempt = 1; ; attempt++) {
+      r = await chat({ ...base, schema });
+      let problems;
+      try {
+        parsed = parseJson(r.text);
+        problems = schemaErrors(schema.schema, parsed);
+      } catch {
+        problems = ['not JSON'];
+      }
+      diag(r, `attempt=${attempt} ${problems.length ? `schema=invalid(${problems.length})` : 'schema=ok'}`);
+      if (!problems.length) break;
+      if (attempt === 2 || deadline - Date.now() < 15000) {
+        return res.status(502).json({ error: 'The AI’s answer was incomplete, so Sada didn’t use it. Please try again.' });
+      }
+    }
     const result = task === 'grade' ? decide(parsed, spec.grade) : shapeResult(task, parsed, oneOf(payload.lang, LANGS, 'both'));
     return res.status(200).json({ result, model: r.model, configuredModel: MODEL, source: 'meta' });
   } catch (e) {

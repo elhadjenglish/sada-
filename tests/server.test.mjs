@@ -98,8 +98,10 @@ test('language "ar" and "en" keep only the chosen explanation language', async (
   assert.ok(en.body.result.meaning_ar && en.body.result.meaning_en);
 });
 
-test('grade: both feedback languages, score clamped', async () => {
-  reset({ content: { correct: true, score: 7, feedback_en: 'Good.', feedback_ar: 'جيد.', better: 'x' } });
+test('grade: both feedback languages, score within 0–1', async () => {
+  // A valid GradeRubric answer (the schema Sada requests). The pre-rubric shape {correct, score} is now refused
+  // as malformed (see "a malformed answer is retried once, then refused").
+  reset({ content: { meaning: 'matches', uses_target_word: true, grammar: 'correct', grammar_note_en: '', grammar_note_ar: '', feedback_en: 'Good.', feedback_ar: 'جيد.', corrected: '' } });
   const out = await call(ai, { task: 'grade', payload: { lang: 'both', answer: 'He is helpful', exercise: { type: 'explain', word: 'helpful', prompt: 'Explain helpful' } } });
   assert.equal(out.status, 200);
   assert.equal(out.body.result.score, 1);
@@ -285,3 +287,155 @@ test('transcribe: per-IP limit (12/min)', async () => {
 });
 
 test.after(() => mock.close());
+
+// ---- Android app: hands-free question ("ask") and app access without a browser Origin ----
+
+const ASK_FULL = { is_vocab: true, term: 'reliable', sentence: 'The bus is very reliable.', answer_en: 'Reliable means you can trust it to work well.', answer_ar: 'موثوق: يمكنك الاعتماد عليه.', example: 'My phone is reliable.' };
+
+test('android: no Origin + X-Sada-Client header is accepted in production; neither is rejected', async () => {
+  reset({ content: ASK_FULL });
+  const ok = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?', lang: 'both' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(ok.status, 200);
+  const bad = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?' } }, { origin: null });
+  assert.equal(bad.status, 403);
+  const evil = await call(ai, { task: 'ask', payload: { question: 'x' } }, { origin: 'https://evil.example', headers: { 'x-sada-client': 'android' } });
+  assert.equal(evil.status, 403, 'a foreign browser Origin is still refused even with the app header');
+});
+
+test('ask: request to Muse Spark carries the question, real context only, and the spoken-answer schema', async () => {
+  reset({ content: ASK_FULL });
+  const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?', lang: 'both', level: 'B1', episode: 'Sada test episode 2', positionSec: 75.4, recent: 'The bus is very reliable.' } },
+    { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(out.status, 200);
+  assert.equal(out.body.source, 'meta');
+  assert.deepEqual(out.body.result, ASK_FULL);
+  const j = calls.at(-1).json;
+  assert.equal(j.response_format.json_schema.name, 'SpokenAnswer');
+  const prompt = JSON.stringify(j.messages);
+  assert.ok(prompt.includes('What does reliable mean?'));
+  assert.ok(prompt.includes('Sada test episode 2') && prompt.includes('1:15'), 'title and position');
+  assert.ok(prompt.includes('APPROXIMATE'), 'context is labelled approximate');
+  assert.ok(prompt.includes('BOTH languages'));
+  noLeak(out);
+});
+
+test('ask: without a transcript the model is told not to invent one', async () => {
+  reset({ content: ASK_FULL });
+  await call(ai, { task: 'ask', payload: { question: 'Explain that sentence.' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.ok(JSON.stringify(calls.at(-1).json.messages).includes('do not invent'));
+});
+
+test('ask: language "ar" / "en" keep only the chosen answer', async () => {
+  reset({ content: ASK_FULL });
+  const ar = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?', lang: 'ar' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(ar.body.result.answer_en, '');
+  assert.ok(ar.body.result.answer_ar.length > 0);
+  const en = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?', lang: 'en' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(en.body.result.answer_ar, '');
+});
+
+test('ask: empty or oversized questions are rejected before calling Meta', async () => {
+  reset({ content: ASK_FULL });
+  const empty = await call(ai, { task: 'ask', payload: { question: '   ' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(empty.status, 400);
+  const big = await call(ai, { task: 'ask', payload: { question: 'x'.repeat(600) } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(big.status, 400);
+  assert.equal(calls.length, 0, 'Meta was not called');
+});
+
+test('transcribe: accepted from the Android app without a browser Origin', async () => {
+  reset();
+  const wav = Buffer.alloc(44 + 32000);
+  wav.write('RIFF', 0); wav.writeUInt32LE(36 + 32000, 4); wav.write('WAVE', 8); wav.write('fmt ', 12); wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write('data', 36); wav.writeUInt32LE(32000, 40);
+  const out = await call(transcribe, { audio: wav.toString('base64') }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(out.status, 200);
+  assert.equal(out.body.text, 'What does helpful mean?');
+});
+
+// ---- transcribe: WAV parsing by chunks, size limit for the longest allowed recording ----
+
+function wavWith({ rate = 16000, seconds = 1, chunksBefore = [], format = 1, channels = 1, bits = 16 } = {}) {
+  const pcm = Buffer.alloc(Math.round(rate * seconds) * 2, 1);
+  const fmt = Buffer.alloc(24);
+  fmt.write('fmt ', 0); fmt.writeUInt32LE(16, 4); fmt.writeUInt16LE(format, 8); fmt.writeUInt16LE(channels, 10);
+  fmt.writeUInt32LE(rate, 12); fmt.writeUInt32LE(rate * channels * bits / 8, 16); fmt.writeUInt16LE(channels * bits / 8, 20); fmt.writeUInt16LE(bits, 22);
+  const extra = chunksBefore.map(([id, body]) => {
+    const h = Buffer.alloc(8); h.write(id, 0); h.writeUInt32LE(body.length, 4);
+    return Buffer.concat([h, body, body.length % 2 ? Buffer.alloc(1) : Buffer.alloc(0)]);
+  });
+  const dataH = Buffer.alloc(8); dataH.write('data', 0); dataH.writeUInt32LE(pcm.length, 4);
+  const body = Buffer.concat([Buffer.from('WAVE'), ...extra, fmt, dataH, pcm]);
+  const riff = Buffer.alloc(8); riff.write('RIFF', 0); riff.writeUInt32LE(body.length, 4);
+  return Buffer.concat([riff, body]);
+}
+
+test('transcribe: WAV with extra chunks (LIST, odd size) is read by chunks and sent to Meta as a canonical WAV', async () => {
+  reset();
+  const wav = wavWith({ chunksBefore: [['LIST', Buffer.from('INFOISFT\x05\x00\x00\x00Lavf\x00')], ['junk', Buffer.from('abc')]] });
+  const out = await call(transcribe, { audio: wav.toString('base64') });
+  assert.equal(out.status, 200);
+  const raw = calls.at(-1).raw;
+  const at = raw.indexOf(Buffer.from('RIFF'));
+  assert.equal(raw.toString('ascii', at + 12, at + 16), 'fmt ', 'fmt chunk directly after the header: canonical layout');
+  assert.equal(raw.toString('ascii', at + 36, at + 40), 'data');
+  assert.equal(raw.indexOf(Buffer.from('LIST')), -1, 'extra chunks are not forwarded');
+});
+
+test('transcribe: 30 s at 24 kHz fits the request limit; longer is refused clearly', async () => {
+  reset();
+  const ok = await call(transcribe, { audio: wavWith({ rate: 24000, seconds: 29.9 }).toString('base64') });
+  assert.equal(ok.status, 200, 'the longest allowed recording at 24 kHz is accepted');
+  const long = await call(transcribe, { audio: wavWith({ rate: 16000, seconds: 31 }).toString('base64') });
+  assert.equal(long.status, 400);
+  assert.match(long.body.error, /under 30 seconds/);
+});
+
+test('transcribe: non-PCM, stereo, 8-bit and wrong rates are refused before calling Meta', async () => {
+  reset();
+  for (const opts of [{ format: 3 }, { channels: 2 }, { bits: 8 }, { rate: 44100 }]) {
+    const out = await call(transcribe, { audio: wavWith(opts).toString('base64') });
+    assert.equal(out.status, 400, JSON.stringify(opts));
+  }
+  assert.equal(calls.length, 0);
+});
+
+// ---- the answer must match the requested schema (model / format fallbacks cannot guarantee it) ----
+
+test('a malformed answer is retried once, then refused, never passed to the app', async () => {
+  reset({ content: { answer_en: 'Reliable means trustworthy.' } }); // missing required fields, as an unconstrained fallback might return
+  const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(out.status, 502);
+  assert.match(out.body.error, /incomplete/);
+  assert.equal(calls.length, 2, 'retried exactly once');
+});
+
+test('wrong field types are refused too (e.g. is_vocab as text)', async () => {
+  reset({ content: { ...FULL, is_vocab: 'yes' } });
+  const out = await call(ai, { task: 'explain', payload: { ...EXPLAIN, lang: 'both' } });
+  assert.equal(out.status, 502);
+});
+
+test('a malformed first answer followed by a valid one succeeds', async () => {
+  let n = 0;
+  reset({ chat: (j, send) => {
+    n++;
+    const content = n === 1 ? { term: 'reliable' } : ASK_FULL;
+    send(200, { model: j.model, choices: [{ message: { role: 'assistant', content: JSON.stringify(content) }, finish_reason: 'stop' }] });
+  } });
+  const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.body.result, ASK_FULL);
+});
+
+test('schema-fallback path: Meta rejects response_format, the plain answer is still validated', async () => {
+  let n = 0;
+  reset({ chat: (j, send) => {
+    n++;
+    if (j.response_format) return send(400, { error: { message: 'response_format not supported', param: 'response_format' } });
+    send(200, { model: j.model, choices: [{ message: { role: 'assistant', content: 'Sure! Reliable means trustworthy.' } , finish_reason: 'stop' }] });
+  } });
+  const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
+  assert.equal(out.status, 502, 'plain prose is never presented as a structured answer');
+});
