@@ -62,6 +62,7 @@ class SadaService : Service() {
         const val ACTION_PLAY = "app.sada.poc.PLAY"       // resume
         const val ACTION_PAUSE = "app.sada.poc.PAUSE"
         const val ACTION_SEEK = "app.sada.poc.SEEK"
+        const val ACTION_CANCEL = "app.sada.poc.CANCEL"
         const val EXTRA_START_MS = "startMs"
         const val EXTRA_EPISODE_ID = "episodeId"
         const val EXTRA_EPISODE_TITLE = "episodeTitle"
@@ -233,6 +234,18 @@ class SadaService : Service() {
             ACTION_PLAY -> {
                 if (machine.phase == Phase.WAIT_CONTINUE) runSteps(machine.onTogglePlayback(), "button:app")
                 else if (machine.phase == Phase.LISTENING && player?.isPlaying == false) { requestFocus(); player?.play(); setPlaying(true) }
+                return START_NOT_STICKY
+            }
+            ACTION_CANCEL -> {
+                // Only while the question is being recorded: stop, discard (nothing is transcribed or sent), resume the podcast.
+                if (machine.phase == Phase.ASKING) {
+                    val q = capture
+                    capture = null
+                    captureOnPhoneMic = false
+                    q?.finishNow()
+                    Diag.log("question", "Question cancelled by the user")
+                    runSteps(machine.onCancel(), "button:cancel")
+                }
                 return START_NOT_STICKY
             }
             ACTION_SEEK -> { player?.seekTo(intent?.getLongExtra(EXTRA_SEEK_MS, 0L) ?: 0L); return START_NOT_STICKY }
@@ -868,7 +881,11 @@ class SadaService : Service() {
                     .put("episodeId", episodeId)
                     .put("at", System.currentTimeMillis()))
                 var first = true
-                for (l in lines) { speakIn(l.text, l.lang, first); first = false }
+                val used = result.optString("lang_used", lang)
+                for (l in lines) {
+                    val voice = if (l.lang == "ar" && used !in listOf("ar", "en", "both")) used else l.lang
+                    speakIn(l.text, voice, first); first = false
+                }
                 if (result.optBoolean("is_vocab", false) && result.optString("term", "").isNotBlank()) {
                     SavedWords.add(this, result.optString("term"), result.optString("sentence", ""), if (en.isNotEmpty()) en else ar, ctx.title)
                     Diag.log("saved", "Saved “${result.optString("term")}”")
@@ -929,12 +946,12 @@ class SadaService : Service() {
     /** Speaks one answer line in English or Arabic (worker thread). Falls back with a note if no Arabic voice exists. */
     private fun speakIn(text: String, lang: String, first: Boolean) {
         val t = tts ?: return
-        if (lang == "ar") {
-            val r = t.setLanguage(Locale("ar"))
+        if (lang != "en") {
+            val r = t.setLanguage(Locale.forLanguageTag(lang))
             if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
                 t.setLanguage(Locale.US)
-                Diag.log("error", "No Arabic voice installed on this phone (code $r)")
-                speakAndWait("An Arabic voice is not installed on this phone. The Arabic answer is shown in the app.", first)
+                Diag.log("error", "No voice for language '$lang' installed on this phone (code $r)")
+                speakAndWait("A voice for that language is not installed on this phone. The answer is shown in the app.", first)
                 return
             }
             try { speakAndWait(text, first) } finally { t.setLanguage(Locale.US) }

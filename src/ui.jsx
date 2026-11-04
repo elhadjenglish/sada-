@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { getState } from './lib/store.js';
 
 const P = {
   today: 'M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
@@ -62,8 +63,12 @@ export function Sheet({ open, onClose, children, label, tall }) {
   );
 }
 
+// Holds the learner's language text. Arabic (and the Arabic + English mode) read right to left; the other
+// explanation languages (French, Spanish, …) are written left to right.
 export function Ar({ children, className = '' }) {
-  return <span dir="rtl" lang="ar" className={`ar ${className}`}>{children}</span>;
+  const l = getState().profile?.explainLang;
+  const other = !!l && !['ar', 'en', 'both'].includes(l);
+  return <span dir={other ? 'ltr' : 'rtl'} lang={other ? l : 'ar'} className={`ar ${className}`}>{children}</span>;
 }
 
 // Shows Arabic, English, or both, following the learner's explanation setting.

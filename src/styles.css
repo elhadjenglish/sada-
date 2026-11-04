@@ -288,3 +288,7 @@ body:has(.player) .toast { bottom: calc(150px + env(safe-area-inset-bottom, 0px)
 .hint.live { display: flex; flex-direction: column; gap: 4px; }
 .hint.live .link.small { align-self: flex-start; padding: 2px 0; font-size: 13px; }
 .hf-log { max-height: 30vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; font-size: 13px; font-weight: 400; color: var(--ink); line-height: 1.4; display: flex; flex-direction: column; gap: 3px; }
+
+/* Pronunciation (speaker) buttons: a slightly larger icon and a comfortable touch target */
+.ask-word, .say-word { min-height: 48px; padding: 6px 8px; cursor: pointer; }
+.ask-word svg, .say-word svg { width: 26px; height: 26px; flex: none; }

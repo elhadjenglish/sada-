@@ -455,3 +455,11 @@ The launcher screen is now `WebActivity`: the React app (onboarding, Today, List
 - **Mode is automatic:** headphones connected → Earbuds + phone mic (with fallback); otherwise Phone Speaker. Chosen when playback starts.
 - **First launch:** asks for your Vercel address once (also in Settings). The old diagnostics screen is under Settings → Audio diagnostics.
 - Episodes with a publisher audio link still use the web player (no voice control).
+
+## X. Minimal fixes before accounts
+
+- **Microphone in practice:** the WebView now asks Android for the microphone (normal Android dialog). If it was refused for good, a dialog opens the app's settings page.
+- **Pronunciation buttons:** speak with the phone's own English voice (the WebView's built-in speech does not work).
+- **Audio files:** Listen → Add your own → "Choose an audio file from your phone". The file is copied into the app and played by the in-app player; a transcript is optional. Imported audio uses the in-app player, so double-press Volume Up works for narrated episodes only. The mic button still asks about anything you hear.
+- **Explanation language:** English, العربية, Français, Español, हिन्दी, Português, Deutsch, 中文 (podcasts stay English). Used for Muse Spark explanations, spoken answers, saved words and practice feedback. Needs a voice for that language on the phone to speak answers; otherwise the answer is shown on screen.
+- **Cancel:** while the microphone records a question, the player shows Cancel: the recording is discarded (nothing is transcribed or sent) and the podcast resumes.

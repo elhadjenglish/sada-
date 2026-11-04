@@ -49,7 +49,7 @@ export default function Practice({ go }) {
     setPhase('loading');
     try {
       const payload = targets.map((w) => ({ word: w.word, meaning_en: w.meaning_en, meaning_ar: w.meaning_ar, context: w.contexts?.[0]?.sentence || '', struggling: isStruggling(w) }));
-      const r = await askAI('exercises', { words: payload, level: s.profile.level, count: Math.min(8, Math.max(4, Math.round(targets.length * 1.4))) });
+      const r = await askAI('exercises', { words: payload, level: s.profile.level, lang: s.profile.explainLang, count: Math.min(8, Math.max(4, Math.round(targets.length * 1.4))) });
       const ex = clean(r?.exercises, s.words);
       if (ex.length < 2) throw new Error('The exercises came back incomplete. Try again, or use the offline drill.');
       setExSource(r._source);

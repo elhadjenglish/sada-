@@ -49,8 +49,14 @@ export default function Settings({ onClose }) {
 
         <label className="label" htmlFor="s-lang">Explanations</label>
         <select id="s-lang" className="input" value={profile.explainLang} onChange={(e) => setProfile({ explainLang: e.target.value })}>
-          <option value="ar">Arabic</option>
-          <option value="en">Simple English</option>
+          <option value="en">🇬🇧 English (simple English)</option>
+          <option value="ar">🇸🇦 العربية (Arabic)</option>
+          <option value="fr">🇫🇷 Français (French)</option>
+          <option value="es">🇪🇸 Español (Spanish)</option>
+          <option value="hi">🇮🇳 हिन्दी (Hindi)</option>
+          <option value="pt">🇧🇷 Português (Portuguese)</option>
+          <option value="de">🇩🇪 Deutsch (German)</option>
+          <option value="zh">🇨🇳 中文 (Chinese)</option>
           <option value="both">Arabic and simple English</option>
         </select>
       </section>

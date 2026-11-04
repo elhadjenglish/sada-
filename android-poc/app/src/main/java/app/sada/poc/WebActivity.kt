@@ -14,11 +14,18 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.KeyEvent
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.provider.OpenableColumns
+import android.speech.tts.TextToSpeech
 import android.widget.EditText
+import java.io.File
+import java.io.FilterInputStream
+import java.util.Locale
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 
@@ -30,6 +37,9 @@ import java.io.ByteArrayInputStream
 class WebActivity : Activity() {
     private lateinit var web: WebView
     private var pendingPlay: String? = null
+    private var pendingWebRequest: PermissionRequest? = null
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
     private val host = "appassets.androidplatform.net"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,13 +57,31 @@ class WebActivity : Activity() {
         web.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 if (request.url.host != host) return null // fonts etc. load normally
-                return asset(request.url.path ?: "/")
+                val path = request.url.path ?: "/"
+                if (path.startsWith("/imports/")) return importedFile(path, request.requestHeaders["Range"])
+                return asset(path)
             }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (request.url.host == host) return false
                 try { startActivity(Intent(Intent.ACTION_VIEW, request.url)) } catch (_: Exception) {}
                 return true
+            }
+        }
+        // The web page's own microphone use (pronunciation practice): ask Android, then answer the page's request.
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                runOnUiThread {
+                    val wantsMic = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                    if (request.origin.host != host || !wantsMic) { request.deny(); return@runOnUiThread }
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                    } else {
+                        pendingWebRequest?.deny()
+                        pendingWebRequest = request
+                        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 12)
+                    }
+                }
             }
         }
         web.addJavascriptInterface(Bridge(), "SadaNative")
@@ -111,6 +139,13 @@ class WebActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 12) { // the web page asked for the microphone
+            val r = pendingWebRequest
+            pendingWebRequest = null
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) r?.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+            else { r?.deny(); if (!shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) showMicSettingsDialog() }
+            return
+        }
         val micIdx = permissions.indexOf(Manifest.permission.RECORD_AUDIO)
         val play = pendingPlay
         pendingPlay = null
@@ -118,7 +153,131 @@ class WebActivity : Activity() {
             if (play != null) startPlay(play)
         } else {
             NativeApp.error = "Sada needs the microphone permission to hear your questions. Allow it in the phone's settings for this app."
+            if (!shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) showMicSettingsDialog()
         }
+    }
+
+    /** The microphone was refused for good ("don't ask again"): offer the app's settings page. */
+    private fun showMicSettingsDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Microphone is blocked")
+            .setMessage("Sada needs the microphone to hear you. Open the app settings, tap Permissions, then Microphone, and choose Allow.")
+            .setPositiveButton("Open settings") { _, _ ->
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
+
+    // ---------------- pronunciation: the phone's own English voice ----------------
+
+    private fun speakNow(text: String) {
+        if (text.isBlank()) return
+        val t = tts
+        if (t == null) {
+            tts = TextToSpeech(applicationContext) { status ->
+                ttsReady = status == TextToSpeech.SUCCESS
+                if (ttsReady) {
+                    tts?.setLanguage(Locale.US)
+                    tts?.setSpeechRate(0.9f)
+                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "word")
+                }
+            }
+        } else if (ttsReady) {
+            t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "word")
+        }
+    }
+
+    // ---------------- audio files from the phone ----------------
+
+    private fun tellWeb(url: String, name: String, error: String) {
+        val js = "window.__sadaAudioPicked(${JSONObject.quote(url)},${JSONObject.quote(name)},${JSONObject.quote(error)})"
+        runOnUiThread { if (!isDestroyed) web.evaluateJavascript(js, null) }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 21) return
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) { tellWeb("", "", "cancelled"); return }
+        Thread {
+            try {
+                var name = "audio"
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) name = c.getString(0) ?: name
+                }
+                val extOfName = name.substringAfterLast('.', "").lowercase()
+                val ext = if (extOfName.length in 2..5 && extOfName.all { it.isLetterOrDigit() }) extOfName else when (contentResolver.getType(uri)) {
+                    "audio/mpeg" -> "mp3"
+                    "audio/mp4", "audio/x-m4a" -> "m4a"
+                    "audio/aac" -> "aac"
+                    "audio/wav", "audio/x-wav" -> "wav"
+                    "audio/ogg" -> "ogg"
+                    "audio/flac" -> "flac"
+                    else -> "mp3"
+                }
+                val dir = File(filesDir, "imports").also { it.mkdirs() }
+                val dest = File(dir, "${System.currentTimeMillis()}.$ext")
+                val input = contentResolver.openInputStream(uri) ?: throw java.io.IOException("cannot open")
+                input.use { src -> dest.outputStream().use { out -> src.copyTo(out) } }
+                tellWeb("https://$host/imports/${dest.name}", name, "")
+            } catch (e: Exception) {
+                tellWeb("", "", "That file could not be imported.")
+            }
+        }.start()
+    }
+
+    /** An imported audio file, served to the page's audio player (with range support, so seeking works). */
+    private fun importedFile(path: String, range: String?): WebResourceResponse {
+        val name = path.removePrefix("/imports/")
+        val f = File(File(filesDir, "imports"), name)
+        if (name.contains('/') || name.contains("..") || !f.isFile) {
+            return WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+        }
+        val total = f.length()
+        val mime = when (name.substringAfterLast('.').lowercase()) {
+            "m4a", "aac" -> "audio/mp4"
+            "wav" -> "audio/wav"
+            "ogg", "oga", "opus" -> "audio/ogg"
+            "flac" -> "audio/flac"
+            else -> "audio/mpeg"
+        }
+        var start = 0L
+        var end = total - 1
+        var status = 200
+        var reason = "OK"
+        val headers = mutableMapOf("Accept-Ranges" to "bytes", "Cache-Control" to "no-cache")
+        val m = range?.let { Regex("bytes=(\d*)-(\d*)").matchEntire(it.trim()) }
+        if (m != null) {
+            val a = m.groupValues[1]
+            val b = m.groupValues[2]
+            if (a.isNotEmpty()) { start = a.toLong(); if (b.isNotEmpty()) end = minOf(b.toLong(), total - 1) }
+            else if (b.isNotEmpty()) start = maxOf(0L, total - b.toLong())
+            if (start > end) start = 0L
+            status = 206
+            reason = "Partial Content"
+            headers["Content-Range"] = "bytes $start-$end/$total"
+        }
+        headers["Content-Length"] = (end - start + 1).toString()
+        val raw = java.io.FileInputStream(f)
+        raw.channel.position(start)
+        val limited = object : FilterInputStream(raw) {
+            var left = end - start + 1
+            override fun read(): Int {
+                if (left <= 0) return -1
+                val r = super.read()
+                if (r >= 0) left--
+                return r
+            }
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (left <= 0) return -1
+                val n = super.read(b, off, minOf(len.toLong(), left).toInt())
+                if (n > 0) left -= n
+                return n
+            }
+        }
+        return WebResourceResponse(mime, null, status, reason, headers, limited)
     }
 
     // ---------------- play an episode ----------------
@@ -216,13 +375,21 @@ class WebActivity : Activity() {
                 else serviceAction(SadaService.ACTION_ASK)
             }
         }
+        @JavascriptInterface fun cancel() { runOnUiThread { serviceAction(SadaService.ACTION_CANCEL) } }
+        @JavascriptInterface fun speak(text: String) { runOnUiThread { speakNow(text) } }
+        @JavascriptInterface fun pickAudio() {
+            runOnUiThread {
+                val i = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("audio/*")
+                try { startActivityForResult(i, 21) } catch (_: Exception) { tellWeb("", "", "No file picker is available on this phone.") }
+            }
+        }
         @JavascriptInterface fun stop() { runOnUiThread { serviceAction(SadaService.ACTION_STOP) } }
         @JavascriptInterface fun setPrefs(lang: String, level: String) { prefs.edit().putString("lang", lang).putString("level", level).apply() }
         @JavascriptInterface fun getServer(): String = server()
         @JavascriptInterface fun setServer(url: String) { prefs.edit().putString("server", SadaApi.normalize(url)).apply() }
         @JavascriptInterface fun openDiagnostics() { runOnUiThread { startActivity(Intent(this@WebActivity, MainActivity::class.java)) } }
 
-        /** The web page's own requests to /api/*: sent from here (same server, same routes), result handed back. */
+        /** The web page's own requests to the Sada server's api routes: sent from here (same server, same routes), result handed back. */
         @JavascriptInterface fun fetchJson(id: Int, path: String, body: String) {
             Thread {
                 val (status, text) = SadaApi(server()).rawPost(path, body, 60_000)
@@ -253,6 +420,7 @@ class WebActivity : Activity() {
     override fun onBackPressed() { moveTaskToBack(true) }
 
     override fun onDestroy() {
+        tts?.shutdown()
         web.removeJavascriptInterface("SadaNative")
         web.destroy()
         super.onDestroy()

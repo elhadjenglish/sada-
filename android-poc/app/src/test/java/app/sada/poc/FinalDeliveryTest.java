@@ -92,4 +92,25 @@ public class FinalDeliveryTest {
         assertFalse("no loop", WakeHealth.mayRecover(100_000, 70_000));
         assertTrue(WakeHealth.mayRecover(130_000, 70_000));
     }
+
+    // ---- Cancel while the question is being recorded ----
+
+    @Test public void cancelWhileRecordingReturnsToListeningAndResumes() {
+        PocStateMachine m = new PocStateMachine(); m.start();
+        m.onVolumeDouble(); m.onInputReady();
+        assertEquals(Phase.ASKING, m.getPhase());
+        assertEquals(Arrays.asList(RESUME), m.onCancel());
+        assertEquals(Phase.LISTENING, m.getPhase());
+        assertEquals("the question is gone: nothing to finish or answer", Collections.emptyList(), m.onQuestionDone());
+    }
+
+    @Test public void cancelDoesNothingOutsideRecording() {
+        PocStateMachine m = new PocStateMachine(); m.start();
+        assertEquals(Collections.emptyList(), m.onCancel());                // listening
+        m.onVolumeDouble();
+        assertEquals("preparing the microphone", Collections.emptyList(), m.onCancel());
+        m.onInputReady(); m.onQuestionDone();
+        assertEquals("answering", Collections.emptyList(), m.onCancel());
+        assertEquals(Phase.ANSWERING, m.getPhase());
+    }
 }

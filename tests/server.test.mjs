@@ -519,3 +519,31 @@ test('ask: which questions count as being about the podcast', async () => {
   for (const q of ['What does reliable mean?', 'What does reliable mean in Arabic?', 'Give me an example with stubborn.'])
     assert.ok(!asksAboutPodcast(q), q);
 });
+
+// ---- explanation languages beyond Arabic and English ----
+
+test('ask: French is requested from Muse Spark and only the French answer is kept', async () => {
+  reset({ content: { ...ASK_FULL, answer_en: 'Reliable means trustworthy.', answer_ar: 'Fiable signifie digne de confiance.' } });
+  const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?', lang: 'fr' } }, ANDROID);
+  assert.equal(out.status, 200);
+  assert.equal(out.body.result.lang_used, 'fr');
+  assert.equal(out.body.result.answer_en, '', 'English is not mixed into a French answer');
+  assert.ok(out.body.result.answer_ar.startsWith('Fiable'));
+  assert.ok(JSON.stringify(calls.at(-1).json.messages).includes('French only'));
+});
+
+test('explain: every supported language reaches the prompt by name', async () => {
+  for (const [code, name] of Object.entries({ es: 'Spanish', hi: 'Hindi', pt: 'Portuguese', de: 'German', zh: 'Simplified Chinese' })) {
+    reset({ content: FULL });
+    const out = await call(ai, { task: 'explain', payload: { ...EXPLAIN, lang: code } });
+    assert.equal(out.status, 200, code);
+    assert.ok(JSON.stringify(calls.at(-1).json.messages).includes(name), code);
+    assert.equal(out.body.result.in_context_en, '', code);
+  }
+});
+
+test('an unknown language falls back safely', async () => {
+  reset({ content: FULL });
+  const out = await call(ai, { task: 'explain', payload: { ...EXPLAIN, lang: 'xx' } });
+  assert.equal(out.status, 200);
+});

@@ -152,6 +152,13 @@ public final class PocStateMachine {
         }
     }
 
+    /** Cancel while the microphone is recording a question: back to listening; the podcast resumes. */
+    public List<StepKind> onCancel() {
+        if (phase != Phase.ASKING) return Collections.emptyList();
+        phase = Phase.LISTENING;
+        return list(StepKind.RESUME);
+    }
+
     /** Screen button "I said it but nothing happened" (diagnostics only). */
     public List<StepKind> onMarkMiss() {
         return phase == Phase.LISTENING ? list(StepKind.MISSED_WAKE) : Collections.<StepKind>emptyList();

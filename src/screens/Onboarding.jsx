@@ -3,16 +3,22 @@ import { setProfile } from '../lib/store.js';
 import { LEVELS } from '../lib/episodes.js';
 import { Rings, Ar, Icon } from '../ui.jsx';
 
+// The podcasts stay English; this is the language Sada explains words and answers questions in.
 const LANGS = [
-  { id: 'ar', title: 'Arabic', note: 'Meanings and explanations in Arabic', ar: 'بالعربية' },
-  { id: 'en', title: 'Simple English', note: 'Stay in English, with easy words', ar: null },
-  { id: 'both', title: 'Both', note: 'Arabic meaning plus a simple English definition', ar: 'الاثنين معًا' },
+  { id: 'en', flag: '🇬🇧', title: 'English', note: 'Simple English' },
+  { id: 'ar', flag: '🇸🇦', title: 'العربية', note: 'Arabic' },
+  { id: 'fr', flag: '🇫🇷', title: 'Français', note: 'French' },
+  { id: 'es', flag: '🇪🇸', title: 'Español', note: 'Spanish' },
+  { id: 'hi', flag: '🇮🇳', title: 'हिन्दी', note: 'Hindi' },
+  { id: 'pt', flag: '🇧🇷', title: 'Português', note: 'Portuguese' },
+  { id: 'de', flag: '🇩🇪', title: 'Deutsch', note: 'German' },
+  { id: 'zh', flag: '🇨🇳', title: '中文', note: 'Chinese' },
 ];
 
 export default function Onboarding() {
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
-  const [lang, setLang] = useState('both');
+  const [lang, setLang] = useState('en');
   const [level, setLevel] = useState('B1');
 
   const finish = () => {
@@ -45,11 +51,11 @@ export default function Onboarding() {
         <section className="onb-step">
           <h2 className="h2">What should we call you?</h2>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your first name" autoComplete="given-name" maxLength={30} />
-          <h2 className="h2 mt">How should Sada explain words?</h2>
+          <h2 className="h2 mt">In which language should Sada explain words and answer questions?</h2>
           <div className="choices">
             {LANGS.map((l) => (
               <button key={l.id} className={`choice ${lang === l.id ? 'on' : ''}`} onClick={() => setLang(l.id)} aria-pressed={lang === l.id}>
-                <span className="choice-title">{l.title} {l.ar && <Ar className="muted">{l.ar}</Ar>}</span>
+                <span className="choice-title">{l.flag} {l.title}</span>
                 <span className="choice-note">{l.note}</span>
               </button>
             ))}

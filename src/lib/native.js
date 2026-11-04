@@ -19,6 +19,16 @@ export const nativeSetPrefs = (lang, level) => N?.setPrefs(lang, level);
 export const nativeServer = () => (N ? N.getServer() : '');
 export const nativeSetServer = (url) => N?.setServer(url);
 export const nativeOpenDiagnostics = () => N?.openDiagnostics();
+export const nativeCancel = () => N?.cancel();
+/** Speaks English text with the phone's own voice (the WebView has no working speechSynthesis). */
+export const nativeSpeak = (text) => N?.speak(String(text || ''));
+/** Opens Android's file picker for audio; the chosen file is copied into the app. Result: onAudioPicked(cb). */
+export const nativePickAudio = () => N?.pickAudio();
+let audioPickedCb = null;
+export const onAudioPicked = (cb) => { audioPickedCb = cb; };
+if (typeof window !== 'undefined') {
+  window.__sadaAudioPicked = (url, name, error) => audioPickedCb?.({ url, name, error });
+}
 
 // Requests to our own /api routes go through the native app: it talks to the Vercel server (the Meta key stays there).
 const pending = new Map();

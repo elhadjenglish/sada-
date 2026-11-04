@@ -1,3 +1,4 @@
+import { nativeAvailable, nativeSpeak } from './native.js';
 // Device text-to-speech (narration + pronunciation) and the browser's built-in recognizer,
 // which is used only for the optional hands-free wake phrase. Questions themselves go to Muse Voice Transcribe.
 export const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
@@ -26,6 +27,7 @@ export function utter(text, rate = 1) {
 }
 
 export function speakOnce(text, rate = 0.85) {
+  if (nativeAvailable) { nativeSpeak(text); return; } // Android app: the phone's own voice
   if (!ttsSupported) return;
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utter(text, rate));

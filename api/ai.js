@@ -6,7 +6,11 @@ import { GRADE_SCHEMA, gradePrompt, decide } from './_grade.js';
 export const config = { maxDuration: 60 };
 
 const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1'];
-const LANGS = ['ar', 'en', 'both'];
+const LANG_NAMES = { ar: 'Arabic', en: 'simple English', fr: 'French', es: 'Spanish', hi: 'Hindi', pt: 'Portuguese', de: 'German', zh: 'Simplified Chinese' };
+const LANGS = ['ar', 'en', 'both', 'fr', 'es', 'hi', 'pt', 'de', 'zh'];
+// Besides Arabic and English, the learner's own language is written into the *_ar fields (historical names), alone.
+const isOtherLang = (lang) => !['ar', 'en', 'both'].includes(lang);
+const slotName = (lang) => (isOtherLang(lang) && LANG_NAMES[lang] ? LANG_NAMES[lang] : 'Arabic');
 const EX_TYPES = ['mcq', 'context', 'fill', 'order', 'translate', 'explain', 'say'];
 
 class BadRequest extends Error {}
@@ -25,6 +29,7 @@ const oneOf = (v, list, d) => (list.includes(v) ? v : d);
 
 // What "both" means is spelled out per field, so the model writes each language where it belongs.
 function langRule(lang) {
+  if (isOtherLang(lang)) return `Write explanations in ${slotName(lang)} only: fill the *_ar fields with the ${slotName(lang)} text (the field names are historical: *_ar means "the learner's language") and set every *_en explanation field to "".`;
   if (lang === 'ar') return 'Write explanations in Arabic only: fill the *_ar fields and set every *_en explanation field to "".';
   if (lang === 'en') return 'Write explanations in simple English only: fill the *_en fields and set every *_ar explanation field to "".';
   return 'Write explanations in BOTH languages: fill every *_ar field in Arabic AND every *_en field in simple English. Neither may be empty.';
@@ -145,7 +150,7 @@ Fields:
 - is_vocab: true if the question is about a word or phrase worth saving, otherwise false
 - word: the word or phrase as it appears in the sentence; lemma: dictionary form; pos: part of speech in English; ipa: IPA
 - meaning_en: simple English definition for a ${level} learner, at most 14 words (always fill this)
-- meaning_ar: short Arabic meaning, 1 to 5 words (always fill this)
+- meaning_ar: short ${slotName(lang)} meaning, 1 to 5 words (always fill this)
 - in_context_en / in_context_ar: one sentence explaining what it means in this exact sentence
 - example: a new, simple English example sentence using the word
 - answer_en / answer_ar: only when is_vocab is false, a short helpful answer; otherwise ""`,
@@ -163,6 +168,7 @@ Fields:
       met_in: str(w?.context, 400, 'context'),
       struggling: w?.struggling === true,
     }));
+    const lang = oneOf(p.lang, LANGS, 'both');
     const count = Math.min(Math.max(parseInt(p.count, 10) || 6, 3), 10);
     const list = [...new Set(words.map((w) => w.word))];
     return {
@@ -183,9 +189,9 @@ Every field listed for a type is required; never leave one out or empty.
 Types and their fields:
 - mcq: prompt, options (4), answer_index (0-3), explanation
 - context: sentence (contains the word), prompt ("What does 'X' mean here?"), options (4 short meanings), answer_index, explanation
-- fill: sentence containing exactly three underscores ___ where the word or its correct form goes, answer (exact form), accept (other correct forms, may be empty), hint (Arabic allowed)
+- fill: sentence containing exactly three underscores ___ where the word or its correct form goes, answer (exact form), accept (other correct forms, may be empty), hint (${slotName(lang)} allowed)
 - order: answer (a 5 to 9 word sentence using the word)
-- translate: source_ar (a short Arabic sentence whose natural English translation uses the word), reference_en (a faithful translation of that exact Arabic: keep its person, tense and mood, e.g. an Arabic imperative stays an English imperative)
+- translate: source_ar (a short ${slotName(lang)} sentence whose natural English translation uses the word), reference_en (a faithful translation of that exact sentence: keep its person, tense and mood, e.g. an Arabic imperative stays an English imperative)
 - explain: prompt ("Explain what 'X' means and give your own example.")`,
     };
   },
@@ -204,7 +210,7 @@ Types and their fields:
       effort: 'low',
       maxTokens: 2000,
       grade: { type: ex.type, word, answer, lang },
-      prompt: gradePrompt({ type: ex.type, word, level, task, sourceAr, reference, answer, langRule: langRule(lang) }),
+      prompt: gradePrompt({ type: ex.type, word, level, task, sourceAr, reference, answer, langRule: langRule(lang), sourceLang: slotName(lang) }),
     };
   },
 };
@@ -218,13 +224,15 @@ function shapeResult(task, r, lang, payload = {}) {
     // Never pass on a "podcast sentence" that is not actually in the podcast text that was used (none for ordinary questions).
     const usedText = asksAboutPodcast(payload.question) ? payload.recent : '';
     if (out.sentence && !squash(usedText).includes(squash(out.sentence))) out.sentence = '';
-    if (used === 'ar') out.answer_en = '';
+    if (used !== 'en' && used !== 'both') out.answer_en = ''; // the learner's language only
     if (used === 'en') out.answer_ar = '';
+    // Muse Spark was told the learner's language; clients see the code actually used
+    if (isOtherLang(used)) out.lang_used = used;
     return out;
   }
   if (task === 'explain') {
     const out = { ...r, word: blank(r.word), lemma: blank(r.lemma) || blank(r.word) };
-    if (lang === 'ar') { out.in_context_en = ''; out.answer_en = ''; }
+    if (lang !== 'en' && lang !== 'both') { out.in_context_en = ''; out.answer_en = ''; }
     if (lang === 'en') { out.in_context_ar = ''; out.answer_ar = ''; }
     return out;
   }

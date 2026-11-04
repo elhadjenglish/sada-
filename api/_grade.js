@@ -21,12 +21,12 @@ export const GRADE_SCHEMA = {
   },
 };
 
-export function gradePrompt({ type, word, level, task, sourceAr, reference, answer, langRule }) {
+export function gradePrompt({ type, word, level, task, sourceAr, reference, answer, langRule, sourceLang = 'Arabic' }) {
   const what = type === 'translate'
-    ? `The learner was asked to translate this Arabic sentence into English using the word "${word}":
+    ? `The learner was asked to translate this ${sourceLang} sentence into English using the word "${word}":
 "${sourceAr}"
-The Arabic sentence is the ONLY definition of what is required.${reference ? `
-An example translation (just one of many acceptable ones; it may even differ from the Arabic in tense or person, so never require its wording, tense, subject or structure): "${reference}"` : ''}`
+The ${sourceLang} sentence is the ONLY definition of what is required.${reference ? `
+An example translation (just one of many acceptable ones; it may even differ from the original in tense or person, so never require its wording, tense, subject or structure): "${reference}"` : ''}`
     : `The learner was asked: ${task}
 They should show they understand "${word}". An explanation in their own words, a correct example sentence, or both are all acceptable.`;
   return `Learner level: ${level}.
@@ -36,7 +36,7 @@ Learner's answer: "${answer}"
 Fill the rubric honestly:
 - meaning: "matches" if the answer expresses the required meaning; "partly" if part of it is missing or changed; "wrong" if it means something else.
   Different but valid wording is still "matches". Imperatives, statements, any pronoun (I/you/he/she/we/they), any tense, contractions, and reordered clauses are all acceptable
-  unless the Arabic itself clearly requires a specific one. Never invent a requirement the exercise did not state.
+  unless the original sentence itself clearly requires a specific one. Never invent a requirement the exercise did not state.
 - uses_target_word: true if "${word}" appears in any correct form (plural, past tense, -ing, etc.).
 - grammar: "correct" if the English is grammatical; "minor_issue" if it is understandable with a small mistake (article, agreement, preposition, spelling, word order slip);
   "error" only if the grammar breaks the sentence so the meaning is unclear. A different tense or subject from the example is NOT a grammar issue.
@@ -94,7 +94,7 @@ export function decide(r, { type, word, answer, lang }) {
     }
     better = clean(r?.corrected, 300);
   }
-  if (lang === 'ar') feedback_en = '';
+  if (lang !== 'en' && lang !== 'both') feedback_en = '';
   if (lang === 'en') feedback_ar = '';
   const score = correct ? (grammar === 'correct' ? 1 : 0.8) : meaning === 'partly' ? 0.4 : 0;
   return { correct, score, meaning, grammar, uses_target_word: usesWord, feedback_en, feedback_ar, better };

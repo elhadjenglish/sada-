@@ -6,7 +6,7 @@ import { askAI, transcribe } from '../lib/ai.js';
 import { ttsSupported, utter, speakOnce, wakeSupported, createRecognizer, speakSegments, earcon, primeEarcon } from '../lib/speech.js';
 import { createHandsFree, isPhrase } from '../lib/handsfree.js';
 import { recordingSupported, startRecording, micMessage } from '../lib/recorder.js';
-import { nativeAvailable, nativeState, nativeDrain, nativePlay, nativeResume, nativePause, nativeSeek, nativeAsk, nativeStop, nativeSetPrefs, fractionOfIdx, idxOfFraction } from '../lib/native.js';
+import { nativeAvailable, nativePickAudio, onAudioPicked, nativeCancel, nativeState, nativeDrain, nativePlay, nativeResume, nativePause, nativeSeek, nativeAsk, nativeStop, nativeSetPrefs, fractionOfIdx, idxOfFraction } from '../lib/native.js';
 import { Icon, Sheet, Ar, Bi, Spinner, LevelTag, toast, DemoTag } from '../ui.jsx';
 import { ProgressBar } from './Today.jsx';
 
@@ -89,14 +89,29 @@ function AddEpisode({ open, onClose, onAdded }) {
   const [audioUrl, setAudioUrl] = useState('');
   const [level, setLevel] = useState(getState().profile?.level || 'B1');
   const [err, setErr] = useState('');
+  const [fileName, setFileName] = useState('');
+  const [importing, setImporting] = useState(false);
+
+  // Android: the picked audio file is copied into the app and served to the player from there
+  useEffect(() => {
+    if (!nativeAvailable) return undefined;
+    onAudioPicked(({ url, name, error }) => {
+      setImporting(false);
+      if (error === 'cancelled') return;
+      if (error || !url) return setErr(error || 'That file could not be imported.');
+      setErr(''); setAudioUrl(url); setFileName(name || 'audio file');
+      setTitle((t) => t || (name || '').replace(/\.[A-Za-z0-9]{2,5}$/, ''));
+    });
+    return () => onAudioPicked(null);
+  }, []);
 
   const submit = () => {
     const words = text.trim().split(/\s+/).filter(Boolean).length;
     if (!title.trim()) return setErr('Give the episode a title.');
-    if (words < 20) return setErr('Paste at least a few sentences of transcript (20+ words).');
+    if (!audioUrl && words < 20) return setErr('Choose an audio file, or paste at least a few sentences of transcript (20+ words).');
     if (audioUrl && !/^https:\/\/\S+$/i.test(audioUrl.trim())) return setErr('The audio link must start with https://');
     const id = addEpisode({ title: title.trim(), text: text.trim(), audioUrl: audioUrl.trim() || null, level, category: 'Mine', minutes: Math.max(1, Math.round(words / 140)) });
-    setTitle(''); setText(''); setAudioUrl(''); setErr('');
+    setTitle(''); setText(''); setAudioUrl(''); setFileName(''); setErr('');
     onAdded(id);
   };
 
@@ -105,10 +120,18 @@ function AddEpisode({ open, onClose, onAdded }) {
       <h2 className="h2">Add your own episode</h2>
       <label className="label" htmlFor="ep-t">Title</label>
       <input id="ep-t" className="input" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} />
-      <label className="label" htmlFor="ep-x">Transcript</label>
+      {nativeAvailable && (
+        <>
+          <button className="btn ghost" onClick={() => { setErr(''); setImporting(true); nativePickAudio(); }} disabled={importing}>
+            {importing ? 'Importing…' : fileName ? `Audio: ${fileName} (tap to change)` : 'Choose an audio file from your phone'}
+          </button>
+          <p className="fine">Pick any audio file stored on your phone. A transcript is optional.</p>
+        </>
+      )}
+      <label className="label" htmlFor="ep-x">Transcript {audioUrl ? '(optional)' : ''}</label>
       <textarea id="ep-x" className="input area" value={text} onChange={(e) => setText(e.target.value)} placeholder="Paste the English text here" />
       <label className="label" htmlFor="ep-a">Audio link (optional)</label>
-      <input id="ep-a" className="input" value={audioUrl} onChange={(e) => setAudioUrl(e.target.value)} placeholder="https://… .mp3 from the publisher" inputMode="url" />
+      <input id="ep-a" className="input" value={audioUrl} onChange={(e) => setAudioUrl(e.target.value)} placeholder="https://… .mp3 from the publisher" inputMode="url" disabled={!!fileName} />
       <p className="fine">With an audio link, Sada plays the publisher’s file and shows the transcript beside it. Without one, your phone’s voice reads the transcript and follows along sentence by sentence.</p>
       <label className="label" htmlFor="ep-l">Level</label>
       <select id="ep-l" className="input" value={level} onChange={(e) => setLevel(e.target.value)}>
@@ -512,6 +535,7 @@ function Player({ episode, onBack, go }) {
       {!handsFree && s.words.length === 0 && <p className="hint">{nativeMode ? 'Tap any word you don’t know, or double-press Volume Up and ask by voice.' : 'Tap any word you don’t know. Or tap the mic and ask.'}</p>}
 
       <article className="transcript" lang="en">
+        {sentences.length === 0 && <p className="hint">No transcript for this audio. Tap the mic to ask about anything you hear.</p>}
         {sentences.map((sen, i) => (
           <p key={i} ref={(el) => (sentenceEls.current[i] = el)} className={`sen ${!audioMode && i === idx ? 'cur' : ''} ${!audioMode && i < idx ? 'past' : ''}`}>
             {!audioMode && (
@@ -574,6 +598,12 @@ function Player({ episode, onBack, go }) {
           </div>
         )}
         {voice?.phase === 'sending' && <div className="rec-bar" role="status">Understanding your question…</div>}
+        {nativeMode && nat?.phase === 'ASKING' && (
+          <div className="rec-bar" role="status">
+            <span className="rec-dot" /> Listening to your question…
+            <button className="link" onClick={nativeCancel}>Cancel</button>
+          </div>
+        )}
       </footer>
 
       <AskSheet ask={ask} lang={profile.explainLang} typed={typed} setTyped={setTyped}
