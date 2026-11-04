@@ -16,6 +16,28 @@ public final class EpisodeContext {
 
     public static EpisodeContext none(String title) { return new EpisodeContext(title == null ? "" : title, ""); }
 
+    /**
+     * Context for the episode that is playing (text supplied by the app): the title and the sentences around the
+     * pause point, estimated from how far through the narration it is (by character count), so APPROXIMATE.
+     */
+    public static EpisodeContext of(String title, long positionMs, long durationMs, String text) {
+        String t = title == null ? "" : title;
+        List<String> ss = sentences(text == null ? "" : text);
+        if (ss.isEmpty() || durationMs <= 0) return none(t);
+        double frac = Math.min(1.0, Math.max(0.0, positionMs / (double) durationMs));
+        int total = 0;
+        for (String s : ss) total += s.length() + 1;
+        int acc = 0, i = ss.size() - 1;
+        for (int k = 0; k < ss.size(); k++) {
+            acc += ss.get(k).length() + 1;
+            if (frac * total < acc) { i = k; break; }
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int k = Math.max(0, i - 2); k <= i; k++) sb.append(sb.length() == 0 ? "" : " ").append(ss.get(k));
+        String recent = sb.length() > 780 ? sb.substring(sb.length() - 780) : sb.toString();
+        return new EpisodeContext(t, recent);
+    }
+
     /** Splits an episode script into sentences. */
     static List<String> sentences(String text) {
         List<String> out = new ArrayList<>();

@@ -4,7 +4,7 @@ There are two kinds of tests. They prove different things.
 
 ## 1. Mocked tests (done, in this repo)
 
-`npm test` runs `tests/server.test.mjs`, `tests/exercises.test.mjs`, `tests/grade.test.mjs`, `tests/handsfree.test.mjs` and `tests/wake.test.mjs`: **98 tests** (November 2026 review). The Android logic tests (Java, simulated audio) run in GitHub Actions as part of the APK build: **102 tests**. The first three run the real `/api/ai` and `/api/transcribe` code against a **local fake of Meta's API**; the hands-free tests drive the real controller with a **simulated** recognizer, player, voice and clock. They cover:
+`npm test` runs `tests/server.test.mjs`, `tests/exercises.test.mjs`, `tests/grade.test.mjs`, `tests/handsfree.test.mjs` and `tests/wake.test.mjs`: **106 tests** (final delivery). The Android logic tests (Java, simulated audio) run in GitHub Actions as part of the APK build: **120 tests**. The first three run the real `/api/ai` and `/api/transcribe` code against a **local fake of Meta's API**; the hands-free tests drive the real controller with a **simulated** recognizer, player, voice and clock. They cover:
 
 - Chat Completions request shape from Meta's docs: `developer` role, `response_format: json_schema`, `max_completion_tokens`, `reasoning_effort`, default temperature, hashed `safety_identifier`
 - Explanation language: `both` returns Arabic and English; `ar` / `en` return only that language

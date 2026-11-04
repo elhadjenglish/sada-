@@ -24,18 +24,28 @@
     <application
         android:allowBackup="false"
         android:icon="@android:drawable/ic_btn_speak_now"
-        android:label="Sada Stage 0"
+        android:label="Sada"
         android:theme="@android:style/Theme.Material.Light">
 
+        <!-- Sada's interface (the React app in a WebView). -->
         <activity
-            android:name=".MainActivity"
+            android:name=".WebActivity"
             android:exported="true"
-            android:launchMode="singleTop">
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Audio diagnostics (opened from Settings → Audio diagnostics). -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:launchMode="singleTop" />
 
         <service
             android:name=".SadaService"

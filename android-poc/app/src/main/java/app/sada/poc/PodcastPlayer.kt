@@ -28,7 +28,21 @@ class PodcastPlayer(
     private val onEvent: (kind: String, text: String) -> Unit,
     /** Optional output device to request (earbud experiment: the headset's call output). */
     private val preferredOutput: () -> android.media.AudioDeviceInfo? = { null },
+    /** Where to start (ms into the file), and whether to loop at the end (the app plays an episode once). */
+    private val startMs: Long = 0L,
+    private val loopAtEnd: Boolean = true,
 ) {
+    /** True once the end of the file has been played (only when [loopAtEnd] is false). */
+    @Volatile var ended = false
+        private set
+    @Volatile private var pendingSeekMs = -1L
+    @Volatile private var baseMs = startMs
+    @Volatile private var headAtBase = 0L
+
+    /** Jumps to a position (ms into the file); applied by the decoder thread. */
+    fun seekTo(ms: Long) { pendingSeekMs = ms.coerceAtLeast(0) }
+
+    private fun headFrames(): Long = (track?.playbackHeadPosition?.toLong() ?: 0L) and 0xffffffffL
     @Volatile private var running = false
     @Volatile private var wantPlay = false
     @Volatile var track: AudioTrack? = null
@@ -67,10 +81,11 @@ class PodcastPlayer(
         track?.pause()
     }
 
+    /** Position in the file, in ms: where playback started or was last moved to, plus what has been played since. */
     fun positionMs(): Long {
-        val t = track ?: return 0
         val sr = sampleRate
-        return if (sr > 0) (t.playbackHeadPosition.toLong() and 0xffffffffL) * 1000 / sr else 0
+        if (track == null || sr <= 0) return baseMs
+        return baseMs + (headFrames() - headAtBase) * 1000 / sr
     }
 
     /** Fills ts with the frame position that was being heard at ts.nanoTime. False if not available yet. */
@@ -134,6 +149,7 @@ class PodcastPlayer(
             }
             if (index < 0) { onEvent("error", "No audio track in the file"); return }
             ex.selectTrack(index)
+            if (startMs > 0) ex.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             val inFmt = ex.getTrackFormat(index)
             val c = MediaCodec.createDecoderByType(inFmt.getString(MediaFormat.KEY_MIME)!!)
             codec = c
@@ -144,6 +160,18 @@ class PodcastPlayer(
             var resampler: StreamResampler? = null
             var refIndex = 0L
             while (running) {
+                val seekTo = pendingSeekMs
+                if (seekTo >= 0) {
+                    pendingSeekMs = -1
+                    ex.seekTo(seekTo * 1000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                    c.flush()
+                    track?.let { t -> try { t.pause(); t.flush(); if (wantPlay) t.play() } catch (_: Exception) {} }
+                    baseMs = seekTo
+                    headAtBase = headFrames()
+                    inputDone = false
+                    ended = false
+                }
+                if (ended) { SystemClock.sleep(50); continue }
                 if (!inputDone) {
                     val inIdx = c.dequeueInputBuffer(10_000)
                     if (inIdx >= 0) {
@@ -190,10 +218,16 @@ class PodcastPlayer(
                     }
                     c.releaseOutputBuffer(outIdx, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                        ex.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                        c.flush()
-                        inputDone = false
-                        onEvent("player", "Reached the end; looping")
+                        if (loopAtEnd) {
+                            ex.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                            c.flush()
+                            inputDone = false
+                            onEvent("player", "Reached the end; looping")
+                        } else {
+                            onEvent("player", "Reached the end")
+                            SystemClock.sleep(400) // let the last buffered audio finish
+                            ended = true
+                        }
                     }
                 }
             }

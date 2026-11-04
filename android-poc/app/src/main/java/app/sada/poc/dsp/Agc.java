@@ -17,6 +17,9 @@ public final class Agc {
     public Agc() { this(-24, 24); }
 
     public double gainDb() { return gainDb; }
+
+    /** Starting gain (e.g. what an earlier session learned), instead of 0 dB. It keeps adapting from there. */
+    public void setGainDb(double db) { gainDb = db; }
     public double noiseFloorDb() { return noiseDb; }
 
     public void process(float[] in, float[] out, int n) {

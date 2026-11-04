@@ -102,6 +102,9 @@ class WakeDetector(private val ctx: Context) {
                 Diag.detectorRebuilds++
                 Diag.log("health", "Detector rebuilt: $why")
             } catch (e: Throwable) {
+                // Never keep a reference to a released detector: no detector at all is a clean state that the health
+                // check (SadaService) retries at most once a minute.
+                kws = null; main = null; alt = null; probe = null
                 Diag.log("error", "Detector rebuild failed: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
@@ -153,10 +156,16 @@ class WakeDetector(private val ctx: Context) {
         if (chunks - lastRefreshChunk > 1250 && now - lastHit > 5000 && now - lastProbe > 5000 &&
             (Diag.lastSecondKind == "SILENCE" || Diag.lastSecondKind == "NOISE")) {
             lastRefreshChunk = chunks
-            closeStreams()
-            openStreams(k)
-            Diag.streamRefreshes++
+            try {
+                closeStreams()
+                openStreams(k)
+                Diag.streamRefreshes++
+            } catch (e: Throwable) {
+                main = null; alt = null; probe = null // health check rebuilds; never crash the capture thread
+                Diag.log("error", "Detector stream refresh failed: ${e.javaClass.simpleName}")
+            }
         }
+        if (muted && out.isNotEmpty()) Diag.keywordsRejectedByState += out.size // heard, but Sada was busy
         return if (muted) emptyList() else out
     }
 

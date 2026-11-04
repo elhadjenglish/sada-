@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useStore, setSettings, setProfile, resetAll, storageWorks } from '../lib/store.js';
 import { LEVELS } from '../lib/episodes.js';
 import { pingAI } from '../lib/ai.js';
+import { nativeAvailable, nativeServer, nativeSetServer, nativeOpenDiagnostics } from '../lib/native.js';
 import { Icon, Spinner } from '../ui.jsx';
 
 export default function Settings({ onClose }) {
@@ -55,11 +56,17 @@ export default function Settings({ onClose }) {
       </section>
 
       <section className="set-group">
-        <label className="label" htmlFor="s-wake">Hands-free phrase</label>
-        <input id="s-wake" className="input" value={settings.wakePhrase} onChange={(e) => setSettings({ wakePhrase: e.target.value })} maxLength={30} />
-        <label className="label" htmlFor="s-resume">Resume phrase</label>
-        <input id="s-resume" className="input" value={settings.resumePhrase} onChange={(e) => setSettings({ resumePhrase: e.target.value })} maxLength={30} />
-        <p className="fine">Two or three distinct words work best for the wake phrase. Hands-free uses Chrome’s own speech recognition while Sada is open on screen (no Meta calls until you ask a question); the mic button uses Muse Voice Transcribe.</p>
+        {nativeAvailable ? (
+          <p className="fine">Hands-free: double-press <b>Volume Up (+)</b> to pause and ask. After the answer, say “Continue” or double-press Volume Up to keep listening. If Sada didn’t hear a question, double-press Volume Down (−) to try again.</p>
+        ) : (
+          <>
+            <label className="label" htmlFor="s-wake">Hands-free phrase</label>
+            <input id="s-wake" className="input" value={settings.wakePhrase} onChange={(e) => setSettings({ wakePhrase: e.target.value })} maxLength={30} />
+            <label className="label" htmlFor="s-resume">Resume phrase</label>
+            <input id="s-resume" className="input" value={settings.resumePhrase} onChange={(e) => setSettings({ resumePhrase: e.target.value })} maxLength={30} />
+            <p className="fine">Two or three distinct words work best for the wake phrase. Hands-free uses Chrome’s own speech recognition while Sada is open on screen (no Meta calls until you ask a question); the mic button uses Muse Voice Transcribe.</p>
+          </>
+        )}
 
         <label className="toggle">
           <input type="checkbox" checked={settings.autoSave} onChange={(e) => setSettings({ autoSave: e.target.checked })} />
@@ -69,12 +76,22 @@ export default function Settings({ onClose }) {
 
       <section className="set-group">
         <p className="label">AI connection</p>
+        {nativeAvailable && (
+          <>
+            <label className="label" htmlFor="s-server">Sada server address</label>
+            <input id="s-server" className="input" defaultValue={nativeServer()} placeholder="https://your-sada.vercel.app" autoCapitalize="none"
+              onBlur={(e) => nativeSetServer(e.target.value.trim())} />
+          </>
+        )}
         <button className="btn secondary" onClick={test} disabled={check?.busy}>{check?.busy ? <Spinner /> : 'Test connection'}</button>
         {check?.ok && <p className="t-mint small">{check.ok}</p>}
         {check?.err && <p className="error small">{check.err}</p>}
       </section>
 
       <section className="set-group">
+        {nativeAvailable && (
+          <button className="btn ghost" onClick={nativeOpenDiagnostics}>Audio diagnostics</button>
+        )}
         <p className="label">Your data</p>
         <p className="fine">Words and progress are stored on this device{storageWorks() ? '' : ' (storage is blocked in this browser, so they will be lost when you close it)'}.</p>
         <div className="row gap">

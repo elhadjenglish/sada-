@@ -35,6 +35,7 @@ class AudioInput(
     @Volatile private var micMode = "recognition"
     @Volatile private var reopenRequested: String? = null
     private var bufferFrames = SAMPLE_RATE
+    private var lastBlockErrorAt = 0L
     /** Optional tap for the consented microphone check: raw block and the detector's calibrated stream. */
     @Volatile var tap: ((raw: FloatArray, detector: FloatArray, reference: FloatArray) -> Unit)? = null
 
@@ -305,7 +306,14 @@ class AudioInput(
                 Diag.noiseFloorDb = frontEnd.agc().noiseFloorDb()
             }
             val aecOn = frontEnd.echoCancellationOn()
-            onBlock(main, alt, if (aecOn) "echo-cancelled+suppressed" else "adaptive gain", if (aecOn) "echo-cancelled" else "calibrated")
+            Diag.micBlocksTotal++
+            try {
+                onBlock(main, alt, if (aecOn) "echo-cancelled+suppressed" else "adaptive gain", if (aecOn) "echo-cancelled" else "calibrated")
+            } catch (e: Throwable) {
+                // A detector problem must never stop the microphone thread; the health check recovers the detector.
+                val now = System.currentTimeMillis()
+                if (now - lastBlockErrorAt > 10_000) { lastBlockErrorAt = now; Diag.log("error", "Detector error on audio block: ${e.javaClass.simpleName}") }
+            }
         }
     }
 

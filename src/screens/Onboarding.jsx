@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { setProfile, setSettings, getState } from '../lib/store.js';
+import { setProfile } from '../lib/store.js';
 import { LEVELS } from '../lib/episodes.js';
 import { Rings, Ar, Icon } from '../ui.jsx';
 
@@ -14,10 +14,8 @@ export default function Onboarding() {
   const [name, setName] = useState('');
   const [lang, setLang] = useState('both');
   const [level, setLevel] = useState('B1');
-  const [wake, setWake] = useState(getState().settings.wakePhrase);
 
   const finish = () => {
-    setSettings({ wakePhrase: wake.trim() || 'Hey Sada' });
     setProfile({ name: name.trim(), explainLang: lang, level, done: true, createdAt: Date.now() });
   };
 
@@ -79,11 +77,10 @@ export default function Onboarding() {
       {step === 3 && (
         <section className="onb-step">
           <h2 className="h2">Ask with your voice</h2>
-          <p className="muted">While an episode plays, tap the mic and ask, for example: <em>“What does helpful mean?”</em> Tap again to send. The episode pauses, Muse Voice Transcribe hears your question, and the episode carries on when you’re ready.</p>
+          <p className="muted">While an episode plays, tap the mic and ask, for example: <em>“What does helpful mean?”</em> The episode pauses, Muse Voice Transcribe hears your question, and the episode carries on when you’re ready.</p>
           <div className="card soft">
-            <label className="label" htmlFor="wake">Hands-free phrase (optional)</label>
-            <input id="wake" className="input" value={wake} onChange={(e) => setWake(e.target.value)} maxLength={30} />
-            <p className="fine">Turn on hands-free inside the player, then say “{wake || 'Hey Sada'}, what does … mean?”. Works in Chrome while Sada is open.</p>
+            <p className="label">Hands-free</p>
+            <p className="fine">With your phone in your pocket, double-press the <b>Volume Up (+)</b> button to pause the episode and ask. After the answer, say “Continue” or double-press Volume Up again to keep listening.</p>
           </div>
           <button className="btn primary big" onClick={finish}>Start learning</button>
         </section>

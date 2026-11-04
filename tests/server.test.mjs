@@ -304,15 +304,15 @@ test('android: no Origin + X-Sada-Client header is accepted in production; neith
 
 test('ask: request to Muse Spark carries the question, real context only, and the spoken-answer schema', async () => {
   reset({ content: ASK_FULL });
-  const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?', lang: 'both', level: 'B1', episode: 'Sada test episode 2', positionSec: 75.4, recent: 'The bus is very reliable.' } },
+  const out = await call(ai, { task: 'ask', payload: { question: 'What did the speaker mean by reliable?', lang: 'both', level: 'B1', episode: 'Sada test episode 2', positionSec: 75.4, recent: 'The bus is very reliable.' } },
     { origin: null, headers: { 'x-sada-client': 'android' } });
   assert.equal(out.status, 200);
   assert.equal(out.body.source, 'meta');
-  assert.deepEqual(out.body.result, ASK_FULL);
+  assert.deepEqual(out.body.result, { ...ASK_FULL, lang_used: 'both' });
   const j = calls.at(-1).json;
   assert.equal(j.response_format.json_schema.name, 'SpokenAnswer');
   const prompt = JSON.stringify(j.messages);
-  assert.ok(prompt.includes('What does reliable mean?'));
+  assert.ok(prompt.includes('What did the speaker mean by reliable?'));
   assert.ok(prompt.includes('Sada test episode 2') && prompt.includes('1:15'), 'title and position');
   assert.ok(prompt.includes('APPROXIMATE'), 'context is labelled approximate');
   assert.ok(prompt.includes('BOTH languages'));
@@ -322,7 +322,7 @@ test('ask: request to Muse Spark carries the question, real context only, and th
 test('ask: without a transcript the model is told not to invent one', async () => {
   reset({ content: ASK_FULL });
   await call(ai, { task: 'ask', payload: { question: 'Explain that sentence.' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
-  assert.ok(JSON.stringify(calls.at(-1).json.messages).includes('do not invent'));
+  assert.ok(JSON.stringify(calls.at(-1).json.messages).includes('cannot check the podcast here'));
 });
 
 test('ask: language "ar" / "en" keep only the chosen answer', async () => {
@@ -426,7 +426,7 @@ test('a malformed first answer followed by a valid one succeeds', async () => {
   } });
   const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
   assert.equal(out.status, 200);
-  assert.deepEqual(out.body.result, ASK_FULL);
+  assert.deepEqual(out.body.result, { ...ASK_FULL, answer_ar: '', sentence: '', lang_used: 'en' }, 'English by default; no podcast text was sent, so no podcast sentence can be kept');
 });
 
 test('schema-fallback path: Meta rejects response_format, the plain answer is still validated', async () => {
@@ -438,4 +438,84 @@ test('schema-fallback path: Meta rejects response_format, the plain answer is st
   } });
   const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?' } }, { origin: null, headers: { 'x-sada-client': 'android' } });
   assert.equal(out.status, 502, 'plain prose is never presented as a structured answer');
+});
+
+
+// ---- final refinement: English by default, Arabic on request, concise, never an invented podcast sentence ----
+
+const ANDROID = { origin: null, headers: { 'x-sada-client': 'android' } };
+
+test('ask: English is the default answer language', async () => {
+  reset({ content: ASK_FULL });
+  const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?' } }, ANDROID);
+  assert.equal(out.body.result.lang_used, 'en');
+  assert.equal(out.body.result.answer_ar, '');
+  assert.ok(JSON.stringify(calls.at(-1).json.messages).includes('simple English only'));
+});
+
+test('ask: an explicit request for Arabic in the question switches that answer to Arabic', async () => {
+  reset({ content: ASK_FULL });
+  for (const q of ['What does reliable mean in Arabic?', 'ما معنى reliable بالعربية؟']) {
+    const out = await call(ai, { task: 'ask', payload: { question: q, lang: 'en' } }, ANDROID);
+    assert.equal(out.body.result.lang_used, 'ar', q);
+    assert.equal(out.body.result.answer_en, '');
+    assert.ok(out.body.result.answer_ar.length > 0);
+  }
+});
+
+test('ask: concise by default, longer only when explicitly asked', async () => {
+  reset({ content: ASK_FULL });
+  await call(ai, { task: 'ask', payload: { question: 'What does reliable mean?' } }, ANDROID);
+  const p1 = JSON.stringify(calls.at(-1).json.messages);
+  assert.ok(p1.includes('1–2 sentences, about 25 words') && p1.includes('No introduction'));
+  reset({ content: ASK_FULL });
+  await call(ai, { task: 'ask', payload: { question: 'Can you explain reliable in more detail?' } }, ANDROID);
+  assert.ok(JSON.stringify(calls.at(-1).json.messages).includes('up to 5 sentences'));
+});
+
+test('ask: a "podcast sentence" that is not in the podcast text sent is removed (never invented)', async () => {
+  reset({ content: { ...ASK_FULL, sentence: 'This sentence was never in the podcast.' } });
+  const out = await call(ai, { task: 'ask', payload: { question: 'Was reliable mentioned in the podcast?', recent: 'The bus is very reliable.' } }, ANDROID);
+  assert.equal(out.body.result.sentence, '');
+  reset({ content: { ...ASK_FULL, sentence: 'the bus is very RELIABLE' } });
+  const ok = await call(ai, { task: 'ask', payload: { question: 'Was reliable mentioned in the podcast?', recent: 'The bus is very reliable.' } }, ANDROID);
+  assert.equal(ok.body.result.sentence, 'the bus is very RELIABLE', 'a real sentence (case/punctuation aside) is kept');
+});
+
+test('ask: with podcast text, the model must say when the word is not in it', async () => {
+  reset({ content: ASK_FULL });
+  await call(ai, { task: 'ask', payload: { question: 'Was stubborn mentioned in the podcast?', recent: 'The bus is very reliable.' } }, ANDROID);
+  assert.ok(JSON.stringify(calls.at(-1).json.messages).includes('does NOT contain the word'));
+});
+
+
+// ---- final delivery: ordinary questions take the direct path (no podcast text), podcast questions use it ----
+
+test('ask: an ordinary vocabulary question gets no podcast text or podcast rules (shortest prompt)', async () => {
+  reset({ content: { ...ASK_FULL, sentence: 'The bus is very reliable.' } });
+  const payload = { question: 'What does reliable mean?', episode: 'Sada test episode 2', positionSec: 75, recent: 'The bus is very reliable. '.repeat(20) };
+  const out = await call(ai, { task: 'ask', payload }, ANDROID);
+  const direct = JSON.stringify(calls.at(-1).json.messages);
+  assert.ok(!direct.includes('The bus is very reliable') && !direct.includes('APPROXIMATE') && !direct.includes('Podcast:'), 'no podcast text');
+  assert.equal(out.body.result.sentence, '', 'no podcast sentence on the direct path');
+  reset({ content: ASK_FULL });
+  await call(ai, { task: 'ask', payload: { ...payload, question: 'Was reliable mentioned in the podcast?' } }, ANDROID);
+  const withPodcast = JSON.stringify(calls.at(-1).json.messages);
+  console.log(`    prompt size: direct ${direct.length} chars vs podcast question ${withPodcast.length} chars`);
+  assert.ok(direct.length < withPodcast.length);
+});
+
+test('ask: Arabic request on the direct path is answered in Arabic straight away', async () => {
+  reset({ content: ASK_FULL });
+  const out = await call(ai, { task: 'ask', payload: { question: 'What does reliable mean in Arabic?', recent: 'The bus is very reliable.' } }, ANDROID);
+  assert.equal(out.body.result.lang_used, 'ar');
+  assert.ok(!JSON.stringify(calls.at(-1).json.messages).includes('The bus is very reliable'));
+});
+
+test('ask: which questions count as being about the podcast', async () => {
+  const { asksAboutPodcast } = await import('../api/ai.js');
+  for (const q of ['Was this word mentioned in the podcast?', 'Where did the speaker use reliable?', 'What did he mean by that sentence?', 'What does it mean in this context?'])
+    assert.ok(asksAboutPodcast(q), q);
+  for (const q of ['What does reliable mean?', 'What does reliable mean in Arabic?', 'Give me an example with stubborn.'])
+    assert.ok(!asksAboutPodcast(q), q);
 });

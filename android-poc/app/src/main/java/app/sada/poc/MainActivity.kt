@@ -93,7 +93,7 @@ class MainActivity : Activity() {
     private fun buildUi() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(32)) }
         col.addView(text("Sada · Stage 0 wake-word test", 21f, true))
-        col.addView(text("Offline test: nothing is sent to the internet. Say “Hey Sada” to pause, then “Continue”.", 14f))
+        col.addView(text("Double-press Volume Up to ask Sada; say “Continue” to resume.", 14f))
 
         col.addView(text("1. Set up (once)", 17f, true))
         col.addView(button("Allow microphone and notifications") { askPermissions() })
@@ -112,7 +112,7 @@ class MainActivity : Activity() {
 
         col.addView(text("3. Test type", 17f, true))
         val modes = RadioGroup(this)
-        val walking = RadioButton(this).apply { id = View.generateViewId(); text = "Walking test: I will say “Hey Sada” and count my attempts" }
+        val walking = RadioButton(this).apply { id = View.generateViewId(); text = "Walking test" }
         val silence = RadioButton(this).apply { id = View.generateViewId(); text = "Silence test: I won't speak (every detection is false)" }
         modes.addView(walking); modes.addView(silence)
         modes.check(if (Diag.testMode == "silence") silence.id else walking.id)
@@ -195,7 +195,6 @@ class MainActivity : Activity() {
         col.addView(button("Ask Sada now") {
             if (!Diag.serviceRunning) toast("Start the test first.") else startService(Intent(this, SadaService::class.java).setAction(SadaService.ACTION_ASK))
         })
-        col.addView(button("I said “Hey Sada” but nothing happened (mark a miss)") { mark() })
         col.addView(text("Earbuds: one tap = pause / continue; two quick taps (or your earbuds' next-track gesture) = Ask Sada; while you ask, a tap ends the question. The notification on the lock screen has Ask Sada and Pause / Continue buttons too.", 12f))
 
         col.addView(text("Phrase test (optional, with your consent)", 15f, true))
@@ -230,7 +229,7 @@ class MainActivity : Activity() {
         })
         col.addView(text("Answer language", 15f, true))
         val langGroup = RadioGroup(this)
-        val savedLang = prefs.getString("lang", "both")
+        val savedLang = prefs.getString("lang", "en")
         for ((key, label) in listOf("ar" to "Arabic", "en" to "Simple English", "both" to "Both (English, then Arabic)")) {
             val rb = RadioButton(this).apply { id = View.generateViewId(); text = label; tag = key }
             langGroup.addView(rb)
@@ -240,12 +239,7 @@ class MainActivity : Activity() {
         col.addView(langGroup)
 
         col.addView(text("How to use", 17f, true))
-        col.addView(text("Double-press Volume Up (+): ask a question (the podcast pauses). Ask, then wait. Double-press Volume Up again, or say “Continue”, to resume. Single presses change the podcast volume. The lock-screen notification also has Ask Sada and Pause / Continue.", 13f))
-        col.addView(CheckBox(this).apply {
-            text = "Voice wake word “Hey Sada” (experimental: keeps the microphone on while the podcast plays)"
-            isChecked = prefs.getBoolean("wakeWord", false)
-            setOnCheckedChangeListener { _, c -> prefs.edit().putBoolean("wakeWord", c).apply() }
-        })
+        col.addView(text("Double-press Volume Up (+): ask a question (the podcast pauses). After the answer: say “Continue” or double-press Volume Up to resume. If no question was heard, double-press Volume Down (−) to try again. Single presses change the podcast volume. The lock-screen notification also has Ask Sada and Pause / Continue.", 13f))
         stateView = text("", 18f, true)
         col.addView(stateView)
         qaView = text("", 14f)
@@ -267,7 +261,7 @@ class MainActivity : Activity() {
         stats = text("", 13f).apply { typeface = Typeface.MONOSPACE }
         col.addView(stats)
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        row.addView(text("Times I said “Hey Sada”: ", 14f))
+        row.addView(text("Attempts: ", 14f))
         attempts = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER; setText(prefs.getString("attempts", "")); minEms = 3
             setOnFocusChangeListener { _, has -> if (!has) prefs.edit().putString("attempts", text.toString()).apply() }
@@ -299,7 +293,7 @@ class MainActivity : Activity() {
             val up = if (running) (now - Diag.startedAt) / 1000 else 0
             val hb = if (Diag.lastHeartbeat > 0) (now - Diag.lastHeartbeat) / 1000 else -1
             stateView.text = if (Diag.serviceRunning) Diag.stateText else "Not running"
-            qaView.text = if (Diag.lastTranscript.isEmpty()) "" else "You asked: “${Diag.lastTranscript}”\nSada: ${Diag.lastAnswer}"
+            qaView.text = if (Diag.lastTranscript.isEmpty()) "" else "You asked: “${Diag.lastTranscript}”\nSada: ${Diag.lastAnswer}\n(${Diag.lastTiming})"
             val words = SavedWords.all(this@MainActivity) // inside the Runnable, plain "this" is the Runnable
             savedView.text = if (words.isEmpty()) "None yet. Ask about a word and Sada saves it here."
                 else "${words.size} saved. Latest: " + words.takeLast(5).reversed().joinToString(", ") { it.optString("term") }
@@ -456,7 +450,7 @@ class MainActivity : Activity() {
             .putExtra(SadaService.EXTRA_AEC, prefs.getString("aecKind", "sada") != "off")
             .putExtra(SadaService.EXTRA_ANDROID_AEC, prefs.getString("aecKind", "sada") == "android")
             .putExtra(SadaService.EXTRA_SPEAKER_MODE, prefs.getString("usageMode", "speaker") == "speaker")
-            .putExtra(SadaService.EXTRA_WAKE_WORD, prefs.getBoolean("wakeWord", false))
+            .putExtra(SadaService.EXTRA_WAKE_WORD, false) // voice wake word removed: Volume Up activates
             .putExtra(SadaService.EXTRA_EARBUD_MIC, prefs.getBoolean("earbudMic", true))
             .putExtra(SadaService.EXTRA_LISTEN_EARBUDS, prefs.getString("usageMode", "speaker") == "earbudCall")
         // Must start while this screen is visible: Android only grants background microphone use this way.

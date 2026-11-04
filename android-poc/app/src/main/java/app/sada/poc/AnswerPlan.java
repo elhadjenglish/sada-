@@ -15,7 +15,8 @@ public final class AnswerPlan {
         @Override public String toString() { return lang + ": " + text; }
     }
 
-    public static final String RESUME_HINT = "Say continue, or double-press volume up, to keep listening.";
+    /** Said after an answer (approved wording; does not offer another question, to keep it short). */
+    public static final String RESUME_HINT = "To keep listening, say Continue or double-press Volume Up.";
 
     /** The answer lines for the selected language: "en", "ar", or "both" (English first, then Arabic). */
     public static List<Line> answer(String lang, String answerEn, String answerAr) {
@@ -42,6 +43,32 @@ public final class AnswerPlan {
 
     public enum Failure { EMPTY_RECORDING, NOT_UNDERSTOOD, NO_SERVER, OFFLINE, TIMEOUT, SERVER_SETUP, BUSY, AI_ERROR, BAD_REQUEST }
 
+    /** Whether to add "Or say continue to keep listening." (the no-question message already says it: say it once). */
+    public static boolean needsResumeHint(Failure f) { return f != Failure.EMPTY_RECORDING; }
+
+    /** How long Sada waits for the user to START speaking after "Go ahead" (not the end-of-speech silence). */
+    public static final int NO_SPEECH_MS = 4500;
+    /** Longest question, counted from the first word. */
+    public static final int MAX_QUESTION_MS = 20000;
+    /** Highest gain a new session may start with (learned in an earlier session); limits podcast-driven false triggers. */
+    public static final double MAX_START_GAIN_DB = 10;
+
+    /** Starting gain for a new session from the gain learned before (never negative, never above the cap). */
+    public static double startGainDb(double learnedDb) {
+        if (Double.isNaN(learnedDb) || learnedDb < 0) return 0;
+        return Math.min(MAX_START_GAIN_DB, learnedDb);
+    }
+
+    /**
+     * Where the time went between the end of the question and Sada's first spoken word (ms; -1 = not measured).
+     * endWait: silence the end-of-speech detector waits for; release: Bluetooth call-mode release that was NOT hidden
+     * behind transcription (0 when it ran in parallel); asr, ai: server calls; voice: from answer received to first word.
+     */
+    public static String timingLine(long total, long endWait, long finalize, long release, long asr, long ai, long voice) {
+        return "end of question → first word " + total + " ms = end-of-speech wait " + endWait + " + finalize " + finalize +
+            (release >= 0 ? " + call-mode release " + release : "") + " + transcription " + asr + " + Muse Spark " + ai + " + voice start " + voice;
+    }
+
     /** HTTP status from the Sada server → kind of failure (0 = no response at all). */
     public static Failure fromStatus(int status, String body) {
         if (status == 0) return Failure.OFFLINE;
@@ -56,8 +83,8 @@ public final class AnswerPlan {
     /** What Sada says (never pretends an answer was generated). */
     public static String message(Failure f) {
         switch (f) {
-            case EMPTY_RECORDING: return "I didn't hear a question. Double-press volume up to ask again.";
-            case NOT_UNDERSTOOD: return "Sorry, I couldn't understand the question. Double-press volume up to ask again.";
+            case EMPTY_RECORDING: return "I didn't hear a question. To try again, double-press Volume Down. To keep listening, say Continue or double-press Volume Up.";
+            case NOT_UNDERSTOOD: return "Sorry, I couldn't understand the question.";
             case NO_SERVER: return "Sada's server address isn't set yet. Add it in the app settings.";
             case OFFLINE: return "I can't reach the internet right now, so I can't answer. Please check your connection and ask again.";
             case TIMEOUT: return "The answer is taking too long. Please ask again in a moment.";

@@ -23,7 +23,12 @@ import kotlin.math.sqrt
  */
 class QuestionCapture {
     // 8 s to start speaking, up to 20 s of question, ends after 1.4 s of silence (Endpointer.DEFAULT_END_SILENCE_MS)
-    private val ep = Endpointer(8000, 20000)
+    // AnswerPlan.NO_SPEECH_MS to start speaking (4.5 s), then up to 20 s of question ending after 1.4 s of silence
+    private val ep = Endpointer(AnswerPlan.NO_SPEECH_MS, AnswerPlan.MAX_QUESTION_MS)
+
+    /** When the question was finished (end of speech detected, timeout, or tap); 0 while still recording. */
+    @Volatile var doneAt = 0L
+        private set
     private val buf = FloatArray(SAMPLE_RATE * 30)
     private var len = 0
     private var skip = 0
@@ -48,11 +53,11 @@ class QuestionCapture {
         val n = min(audio.size, buf.size - len)
         System.arraycopy(audio, 0, buf, len, n)
         len += n
-        if (ep.process(detect, detect.size) == Endpointer.State.DONE || len >= buf.size) done = true
+        if (ep.process(detect, detect.size) == Endpointer.State.DONE || len >= buf.size) { done = true; doneAt = SystemClock.elapsedRealtime() }
         return done
     }
 
-    fun finishNow() { done = true }
+    fun finishNow() { if (!done) doneAt = SystemClock.elapsedRealtime(); done = true }
 
     val reason: String get() = when {
         ep.reason() == Endpointer.Reason.END_OF_SPEECH -> "you stopped talking"

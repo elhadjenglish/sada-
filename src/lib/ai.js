@@ -1,9 +1,12 @@
 // Browser side of the AI layer. All Meta calls go through our own /api routes, so the key never reaches the device.
 // Every request has a deadline: a request that hangs ends in a clear error instead of an endless spinner.
 
+import { nativeAvailable, nativeFetch } from './native.js';
+
 const TIMEOUTS = { explain: 45000, grade: 45000, exercises: 60000, ping: 30000, transcribe: 35000 };
 
 async function post(path, body, { timeoutMs, signal } = {}) {
+  if (nativeAvailable) return postViaNative(path, body, timeoutMs);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(new DOMException('timeout', 'TimeoutError')), timeoutMs);
   const onOuterAbort = () => ctrl.abort(signal.reason);
@@ -28,6 +31,21 @@ async function post(path, body, { timeoutMs, signal } = {}) {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onOuterAbort);
   }
+}
+
+// Android app: the request is sent by the native layer (same server, same /api routes, same error messages).
+async function postViaNative(path, body, timeoutMs) {
+  const r = await Promise.race([
+    nativeFetch(path, body),
+    new Promise((res) => setTimeout(() => res({ status: -1, body: '' }), timeoutMs)),
+  ]);
+  if (r.status === -1) throw new Error(`No answer after ${Math.round(timeoutMs / 1000)} seconds. Check your connection and try again.`);
+  if (r.status === 0) throw new Error(r.body || 'No connection. Check your internet and try again.');
+  let data = null;
+  try { data = JSON.parse(r.body); } catch {}
+  if (r.status < 200 || r.status > 299) throw new Error(data?.error || `Request failed (${r.status}).`);
+  if (!data || typeof data !== 'object') throw new Error('The server sent an empty answer. Try again.');
+  return data;
 }
 
 // `source` is 'meta' for real Meta answers and 'demo' for preview sample data. The UI labels anything that isn't Meta.

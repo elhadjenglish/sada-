@@ -11,6 +11,11 @@ on:
     paths:
       - 'android-poc/**'
       - 'android-poc.zip'
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'vite.config.js'
       - '.github/workflows/android-stage0.yml'
 
 permissions:
@@ -44,6 +49,18 @@ jobs:
             [ -f "$f" ] || { echo "::error::Missing $f. The folder structure was lost during upload; upload android-poc.zip instead."; exit 1; }
           done
           echo "All expected files present."
+
+      # The real Sada interface (React app) is built here and packed into the Android app.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build the Sada web interface
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+          test -f dist/index.html || { echo "::error::The web build produced no dist/index.html"; exit 1; }
 
       - uses: actions/setup-java@v4
         with:
@@ -80,6 +97,16 @@ jobs:
         run: |
           sudo apt-get install -y -qq espeak-ng >/dev/null
           python3 scripts/kws_check.py
+
+      # After the model step on purpose: that step recreates the assets folder.
+      - name: Put the web interface into the Android app
+        run: |
+          set -euo pipefail
+          rm -rf android-poc/app/src/main/assets/web
+          mkdir -p android-poc/app/src/main/assets/web
+          cp -r dist/. android-poc/app/src/main/assets/web/
+          test -f android-poc/app/src/main/assets/web/index.html
+          ls android-poc/app/src/main/assets/web
 
       - name: Unit tests (state machine)
         working-directory: android-poc

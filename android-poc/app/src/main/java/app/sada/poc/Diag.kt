@@ -106,10 +106,15 @@ object Diag {
     @Volatile var usageMode = "-"
     @Volatile var stateText = "Not started"
     /** Identifies the build in every report: APK version (GitHub Actions run) and source revision. */
-    const val SOURCE_VERSION = "2026-11-04 final MVP review"
+    const val SOURCE_VERSION = "2026-11-04 final delivery"
     @Volatile var appVersion = "?"
     @Volatile var lastTranscript = ""
     @Volatile var lastAnswer = ""
+    @Volatile var lastTiming = "-"
+    // wake-word pipeline health (SadaService checks every 10 s while listening)
+    @Volatile var micBlocksTotal = 0L
+    @Volatile var keywordsRejectedByState = 0
+    @Volatile var wakeStatus = "not checked yet"
     @Volatile var sessionState = "-"
     @Volatile var wakeWordOn = false
     private val volumeKeys = java.util.concurrent.ConcurrentHashMap<String, Int>()
@@ -365,6 +370,8 @@ object Diag {
         val st = stats()
         val sb = StringBuilder()
         sb.append("Sada app ${appVersion} (source ${SOURCE_VERSION})\n")
+        sb.append("Last response timing: $lastTiming\n")
+        sb.append("Wake pipeline: $wakeStatus | keywords heard while Sada was busy: $keywordsRejectedByState\n")
         sb.append("Sada Stage 0 report — ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())}\n")
         sb.append("Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n")
         sb.append("Test mode: $testMode | playback: ${if (playback) "on" else "OFF (listen only)"} | keywords: $keywordsMode | source: $source\n\n")

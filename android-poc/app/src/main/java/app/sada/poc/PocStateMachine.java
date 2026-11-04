@@ -49,8 +49,9 @@ public final class PocStateMachine {
     public static boolean isContinue(String label) { return label.trim().toUpperCase().startsWith("CONTINUE"); }
 
     public List<StepKind> onKeyword(String label) {
-        boolean wake = isWake(label), cont = isContinue(label);
-        if (!wake && !cont) return list(StepKind.UNKNOWN_KEYWORD);
+        boolean cont = isContinue(label);
+        if (!cont) return list(StepKind.UNKNOWN_KEYWORD); // "Hey Sada" no longer activates: Volume Up only
+        boolean wake = false;
         switch (phase) {
             case STOPPED: return Collections.emptyList();
             case LISTENING:
@@ -75,7 +76,13 @@ public final class PocStateMachine {
         return list(StepKind.ANSWER);
     }
 
+    private boolean retryOffered = false;
+
+    /** After "I didn't hear a question": Volume Down may retry (only then). */
+    public void offerRetry() { if (phase == Phase.WAIT_CONTINUE) retryOffered = true; }
+
     public List<StepKind> onAnswerDone() {
+        retryOffered = false;
         if (phase != Phase.ANSWERING) return Collections.emptyList();
         phase = Phase.WAIT_CONTINUE;
         return list(StepKind.LISTEN_FOR_CONTINUE);
@@ -125,6 +132,22 @@ public final class PocStateMachine {
             case WAIT_CONTINUE: phase = Phase.LISTENING; return list(StepKind.CONTINUE_DETECTED, StepKind.RESUME);
             case ASKING: return list(StepKind.STOP_CAPTURE);
             case ARMING: case ANSWERING: return list(StepKind.IGNORED_BUSY);
+            default: return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Volume Down double press = ask (again): a new question right after an answer or after "no question heard"
+     * (podcast stays paused), or while the podcast plays. Never interrupts a question being recorded, never starts a
+     * second question while one is being prepared or answered.
+     */
+    public List<StepKind> onVolumeDownDouble() {
+        switch (phase) {
+            case WAIT_CONTINUE:
+                if (!retryOffered) return Collections.emptyList(); // only after a no-speech timeout
+                retryOffered = false;
+                return onActivate();
+            case ARMING: case ASKING: case ANSWERING: return list(StepKind.IGNORED_BUSY);
             default: return Collections.emptyList();
         }
     }

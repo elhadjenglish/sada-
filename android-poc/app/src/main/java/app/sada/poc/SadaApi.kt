@@ -45,6 +45,36 @@ class SadaApi(rawBaseUrl: String) {
         return out.optJSONObject("result") ?: throw Failure(AnswerPlan.Failure.AI_ERROR, "no result in the reply")
     }
 
+    /**
+     * Plain request for the web layer: returns (HTTP status, body). Status 0 = no connection (body is a message to show).
+     * The web app sends its own JSON to the same /api routes it uses in a browser.
+     */
+    fun rawPost(path: String, jsonText: String, timeoutMs: Int): Pair<Int, String> {
+        if (baseUrl.isBlank()) return Pair(0, "Set the Sada server address in Settings.")
+        if (baseUrl.startsWith("http://")) return Pair(0, "The server address must start with https://")
+        val c = try { URL(baseUrl + path).openConnection() as HttpURLConnection } catch (e: Exception) { return Pair(0, "The server address is not valid.") }
+        try {
+            c.requestMethod = "POST"
+            c.connectTimeout = 10_000
+            c.readTimeout = timeoutMs
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            c.setRequestProperty("X-Sada-Client", "android")
+            val bytes = jsonText.toByteArray(Charsets.UTF_8)
+            c.setFixedLengthStreamingMode(bytes.size)
+            c.outputStream.use { it.write(bytes) }
+            val status = c.responseCode
+            val text = (if (status in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            return Pair(status, text)
+        } catch (e: SocketTimeoutException) {
+            return Pair(0, "No answer after ${timeoutMs / 1000} seconds. Check your connection and try again.")
+        } catch (e: IOException) {
+            return Pair(0, "No connection. Check your internet and try again.")
+        } finally {
+            c.disconnect()
+        }
+    }
+
     /** Connection test used by the settings screen. */
     fun ping(): String {
         val out = post("/api/ai", JSONObject().put("task", "ping"), 20_000)

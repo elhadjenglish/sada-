@@ -6,6 +6,7 @@ import { askAI, transcribe } from '../lib/ai.js';
 import { ttsSupported, utter, speakOnce, wakeSupported, createRecognizer, speakSegments, earcon, primeEarcon } from '../lib/speech.js';
 import { createHandsFree, isPhrase } from '../lib/handsfree.js';
 import { recordingSupported, startRecording, micMessage } from '../lib/recorder.js';
+import { nativeAvailable, nativeState, nativeDrain, nativePlay, nativeResume, nativePause, nativeSeek, nativeAsk, nativeStop, nativeSetPrefs, fractionOfIdx, idxOfFraction } from '../lib/native.js';
 import { Icon, Sheet, Ar, Bi, Spinner, LevelTag, toast, DemoTag } from '../ui.jsx';
 import { ProgressBar } from './Today.jsx';
 
@@ -129,6 +130,10 @@ function Player({ episode, onBack, go }) {
   const { settings, profile } = s;
   const sentences = useMemo(() => splitSentences(episode.text), [episode.text]);
   const audioMode = !!episode.audioUrl;
+  // Android app: the narration, microphone, questions and spoken answers run in the native audio service
+  // (double-press Volume Up, automatic end-of-speech, Muse Voice Transcribe, Muse Spark, Android voice).
+  const nativeMode = nativeAvailable && !audioMode;
+  const [nat, setNat] = useState(null);
   const saved = s.progress[episode.id];
 
   const [idx, setIdx] = useState(() => (saved && !saved.done ? Math.min(saved.idx || 0, sentences.length - 1) : 0));
@@ -215,6 +220,15 @@ function Player({ episode, onBack, go }) {
 
   const play = () => {
     setFinished(false);
+    if (nativeMode) {
+      if (!playingRef.current) logActivity('listened');
+      playingRef.current = true;
+      setPlaying(true);
+      const st = nativeState();
+      if (st && st.loaded && st.episodeId === episode.id && !st.ended) nativeResume();
+      else nativePlay({ id: episode.id, title: episode.title, text: episode.text, startFraction: fractionOfIdx(sentences, idxRef.current), lang: profile.explainLang, level: profile.level });
+      return;
+    }
     if (audioMode) { audioRef.current?.play().catch(() => toast('This audio link could not be played. Check that it points to an audio file.')); return; }
     if (!ttsSupported) return toast('This browser has no English voice. Try Chrome on Android.');
     if (!playingRef.current) logActivity('listened');
@@ -223,6 +237,7 @@ function Player({ episode, onBack, go }) {
     speakFrom.current(idxRef.current);
   };
   const pause = () => {
+    if (nativeMode) { playingRef.current = false; setPlaying(false); nativePause(); return; }
     if (audioMode) { audioRef.current?.pause(); return; }
     playingRef.current = false;
     setPlaying(false);
@@ -234,6 +249,7 @@ function Player({ episode, onBack, go }) {
     const j = Math.max(0, Math.min(sentences.length - 1, i));
     idxRef.current = j;
     setIdx(j);
+    if (nativeMode) { const st = nativeState(); if (st && st.loaded && st.episodeId === episode.id) nativeSeek(fractionOfIdx(sentences, j)); return; }
     if (!audioMode && playingRef.current) speakFrom.current(j);
   };
 
@@ -247,7 +263,8 @@ function Player({ episode, onBack, go }) {
     playingRef.current = false;
     if (ttsSupported) window.speechSynthesis.cancel();
     recRef.current?.cancel();
-  }, []);
+    if (nativeMode) { const st = nativeState(); if (st && st.episodeId === episode.id) nativeStop(); }
+  }, []); // eslint-disable-line
 
   // In audio mode there are no sentence timings; estimate the current sentence from the playback position.
   const currentIdx = () => (audioMode && time.d ? Math.min(sentences.length - 1, Math.floor((time.t / time.d) * sentences.length)) : idxRef.current);
@@ -290,6 +307,7 @@ function Player({ episode, onBack, go }) {
     askTokenRef.current++;
     setAsk(null);
     setTyped('');
+    if (nativeMode) { resumeRef.current = false; const st = nativeState(); if (st && st.episodeId === episode.id && !st.playing) { playingRef.current = true; setPlaying(true); nativeResume(); } return; }
     if (resumeRef.current) { resumeRef.current = false; play(); }
   };
 
@@ -303,6 +321,7 @@ function Player({ episode, onBack, go }) {
 
   /* --- push-to-talk via Muse Voice Transcribe --- */
   const startVoice = async () => {
+    if (nativeMode) { resumeRef.current = false; nativeAsk(); return; }
     if (handsFree) return toast(`Hands-free is on: just say “${settings.wakePhrase}” and your question.`);
     if (!recordingSupported) return toast('This browser can’t record audio. Type your question instead.');
     resumeRef.current = resumeRef.current || isPlaying();
@@ -423,6 +442,47 @@ function Player({ episode, onBack, go }) {
 
   const newlyCaught = Math.max(0, s.words.length - caughtAtStart.current);
 
+  /* --- Android app: follow the native audio service (position, play state, questions and answers) --- */
+  useEffect(() => {
+    if (!nativeMode) return undefined;
+    nativeSetPrefs(profile.explainLang, profile.level);
+    const tick = () => {
+      const st = nativeState();
+      if (!st) return;
+      setNat(st);
+      const mine = st.episodeId === episode.id && st.loaded;
+      if (mine) {
+        if (st.playing !== playingRef.current) { playingRef.current = st.playing; setPlaying(st.playing); }
+        if (st.durationMs > 0) {
+          const j = Math.min(sentences.length - 1, idxOfFraction(sentences, st.positionMs / st.durationMs));
+          if (j !== idxRef.current) { idxRef.current = j; setIdx(j); }
+        }
+        if (st.ended) { nativeStop(); finish(); }
+      }
+      // questions and answers that arrived (also while the screen was off): save words, show the last answer
+      const events = nativeDrain();
+      events.forEach((ev, n) => {
+        if (ev.type !== 'qa') return;
+        const si = Math.min(sentences.length - 1, idxRef.current);
+        const sentence = ev.sentence || sentences[si] || '';
+        const r = {
+          word: ev.term || '', lemma: ev.term || '', pos: '', ipa: '',
+          meaning_en: ev.answer_en || '', meaning_ar: ev.answer_ar || '', answer_en: ev.answer_en || '', answer_ar: ev.answer_ar || '',
+          example: ev.example || '', is_vocab: !!(ev.isVocab && ev.term), _source: 'meta',
+        };
+        let savedInfo = null;
+        if (r.is_vocab && getState().settings.autoSave) savedInfo = save(r, sentence);
+        logActivity('asked');
+        if (n === events.length - 1) setAsk({ status: 'done', word: r.word, question: ev.question, sentence, result: r, saved: savedInfo });
+      });
+      // the podcast resumed (Continue / Volume Up): close the answer sheet
+      if (mine && st.phase === 'LISTENING' && st.playing) setAsk((a) => (a && a.status === 'done' ? null : a));
+    };
+    tick();
+    const t = setInterval(tick, 500);
+    return () => clearInterval(t);
+  }, [nativeMode, profile.explainLang, profile.level]); // eslint-disable-line
+
   return (
     <div className="player">
       <header className="player-top">
@@ -431,7 +491,7 @@ function Player({ episode, onBack, go }) {
           <span className="ep-title sm">{episode.title}</span>
           <span className="small muted"><LevelTag level={episode.level} /> {audioMode ? 'Publisher audio' : 'Narrated'}</span>
         </div>
-        {wakeSupported ? (
+        {wakeSupported && !nativeMode ? (
           <button className={`icon-btn ${handsFree ? 'on' : ''}`} onClick={() => { primeEarcon(); setHandsFree(!handsFree); }} aria-pressed={handsFree}
             aria-label={handsFree ? 'Turn hands-free off' : 'Turn hands-free on'} title="Hands-free">
             <Icon name="ear" />
@@ -446,7 +506,10 @@ function Player({ episode, onBack, go }) {
           {showHfLog && <HfLog log={hfLog} />}
         </div>
       )}
-      {!handsFree && s.words.length === 0 && <p className="hint">Tap any word you don’t know. Or tap the mic and ask.</p>}
+      {nativeMode && nat?.preparing && <p className="hint live" role="status">{nat.preparing}</p>}
+      {nativeMode && nat?.error && <p className="error small" role="alert">{nat.error}</p>}
+      {nativeMode && nat?.episodeId === episode.id && nat.phase && !['LISTENING', 'STOPPED'].includes(nat.phase) && <p className="hint live" role="status" aria-live="polite">{nat.stateText}</p>}
+      {!handsFree && s.words.length === 0 && <p className="hint">{nativeMode ? 'Tap any word you don’t know, or double-press Volume Up and ask by voice.' : 'Tap any word you don’t know. Or tap the mic and ask.'}</p>}
 
       <article className="transcript" lang="en">
         {sentences.map((sen, i) => (
@@ -493,7 +556,7 @@ function Player({ episode, onBack, go }) {
           </button>
         )}
         <div className="ctrl-row">
-          <button className="rate" onClick={cycleRate} aria-label={`Speed ${settings.rate}x`} disabled={audioMode}>{audioMode ? '' : `${settings.rate}×`}</button>
+          <button className="rate" onClick={cycleRate} aria-label={`Speed ${settings.rate}x`} disabled={audioMode || nativeMode}>{audioMode || nativeMode ? '' : `${settings.rate}×`}</button>
           <button className="icon-btn" onClick={() => (audioMode ? audioRef.current && (audioRef.current.currentTime -= 10) : seek(idx - 1))} aria-label={audioMode ? 'Back 10 seconds' : 'Previous sentence'}><Icon name="prev" /></button>
           <button className="play" onClick={() => { if (!playing) hfRef.current?.onManualResume(); playing ? pause() : play(); }} aria-label={playing ? 'Pause' : 'Play'}>
             <Icon name={playing ? 'pause' : 'play'} size={28} fill />

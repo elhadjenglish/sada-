@@ -407,3 +407,51 @@ For about 1.5–2 s nothing recorded at all, and you had no clear cue. Speech in
 **Failures are said, never faked:** no speech, not understood, no internet, timeout, server not set up (no key), too many requests.
 
 **Arabic answers** need an Arabic text-to-speech voice on the phone (Settings → Text-to-speech → install Arabic). Without one, Sada says so, and the Arabic answer is shown in the app.
+
+## U. Final refinement
+
+- **No question heard:** if you don't start speaking within **4.5 s** after "Go ahead", Sada says once: "I didn't hear a question. Say Continue when you're ready." The podcast stays paused until you say **Continue** or double-press Volume Up. It never resumes on its own. Once you start speaking, the end-of-speech rule is unchanged: 1.4 s of silence; shorter pauses don't end the question.
+- **Answers:**
+  - English by default. Arabic if chosen in settings, or for one answer if your question asks for it ("…in Arabic?", "بالعربية").
+  - 1–2 sentences (about 25 words), the podcast-context meaning first, an example only when useful. Longer when you ask for more detail.
+  - If the podcast text available to Sada doesn't contain the word, Sada says so. A "podcast sentence" that isn't actually in that text is removed on the server, never invented.
+- **Faster answers with earbuds:** transcription and Muse Spark now start immediately while Bluetooth call mode is released in parallel. The answer is spoken only once the normal audio route is back.
+- **First "Hey Sada" of a session:** gain control now starts from the level learned in the previous session (at most +10 dB) instead of 0 dB, and the detector is reset once 2 s after start-up.
+- **Timing in every report:** "Last response timing: end of question → first word N ms = end-of-speech wait + call-mode release (part not hidden) + transcription + Muse Spark + voice start".
+
+## V. Final delivery
+
+**Controls (approved):**
+
+| Gesture / voice | While the podcast plays | After an answer, or after "no question heard" |
+|---|---|---|
+| Double Volume Up | ask a question | **resume** the podcast |
+| Double Volume Down | ask a question | **ask again** (podcast stays paused) |
+| "Continue" | – | **resume** |
+
+Single presses still change the volume. Long and triple presses are only volume changes. Double presses never interrupt a question being recorded.
+
+**Spoken guidance:**
+- after an answer: "To keep listening, say Continue or double-press Volume Up."
+- no speech for 4.5 s: "I didn't hear a question. To try again, double-press Volume Down. To keep listening, say Continue or double-press Volume Up."
+
+The podcast never resumes on its own.
+
+**Direct answers:** ordinary questions ("What does reliable mean?") go to Muse Spark without podcast text, so the prompt is about 40% smaller. Podcast text is used only when the question is about the podcast ("Was it mentioned?", "Where did the speaker use it?", "What did they mean in that sentence?"). If none is available, Sada says it can't check the podcast.
+
+**Wake-word health** (wake word enabled): every 10 s of listening the report's "Wake pipeline" line shows one of:
+- microphone failure;
+- detector not processing;
+- OK (then a miss is a no-match).
+
+"keywords heard while Sada was busy" counts detections that were rejected because of the app state. If the detector stops processing, it is rebuilt silently, or the microphone is reopened (at most once a minute; the podcast keeps playing). A failed rebuild or stream refresh can no longer leave a dead detector or stop the microphone thread.
+
+## W. One app: the Sada interface + the native audio system
+
+The launcher screen is now `WebActivity`: the React app (onboarding, Today, Listen, Words, Practice) running in a WebView, served from the app's assets (the workflow builds it with `npm run build` and copies `dist/` into `app/src/main/assets/web/`). The audio system stays native and is reached through the `SadaNative` bridge:
+- **Play / pause / seek / mic button** in Listen → the native player (one player only), the volume-button gestures, question recording with automatic end-of-speech, Muse Voice Transcribe, Muse Spark, Android voice, "Continue".
+- **Questions and answers** are queued natively and handed to the page (also after a locked screen): the answer sheet appears and words are saved to the app's own vocabulary.
+- **/api requests** from the page go through the native layer to your Vercel server (the Meta key stays there).
+- **Mode is automatic:** headphones connected → Earbuds + phone mic (with fallback); otherwise Phone Speaker. Chosen when playback starts.
+- **First launch:** asks for your Vercel address once (also in Settings). The old diagnostics screen is under Settings → Audio diagnostics.
+- Episodes with a publisher audio link still use the web player (no voice control).

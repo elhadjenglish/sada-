@@ -57,6 +57,19 @@ class SadaService : Service() {
         const val ACTION_ASK = "app.sada.poc.ASK"
         const val ACTION_TOGGLE = "app.sada.poc.TOGGLE"
         const val ACTION_VOLUME_KEY = "app.sada.poc.VOLUME_KEY"
+        // from the app's web interface (WebActivity)
+        const val ACTION_LOAD = "app.sada.poc.LOAD"       // play an episode (starts the service, or switches episode)
+        const val ACTION_PLAY = "app.sada.poc.PLAY"       // resume
+        const val ACTION_PAUSE = "app.sada.poc.PAUSE"
+        const val ACTION_SEEK = "app.sada.poc.SEEK"
+        const val EXTRA_START_MS = "startMs"
+        const val EXTRA_EPISODE_ID = "episodeId"
+        const val EXTRA_EPISODE_TITLE = "episodeTitle"
+        const val EXTRA_EPISODE_TEXT = "episodeText"
+        const val EXTRA_DURATION_MS = "durationMs"
+        const val EXTRA_SEEK_MS = "seekMs"
+        /** The running service, for the web layer's state snapshot. */
+        @Volatile var live: SadaService? = null
         const val EXTRA_DIRECTION = "direction"
         const val EXTRA_WAKE_WORD = "wakeWord"
         const val EXTRA_SOURCE = "source"
@@ -75,6 +88,17 @@ class SadaService : Service() {
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    /** Answers run here: transcription + Muse Spark can start while the worker releases Bluetooth call mode. */
+    private val answerThread = Executors.newSingleThreadExecutor()
+    /** Released when the audio route is ready for speaking the answer (earbud question: after call mode is released). */
+    @Volatile private var routeReady: CountDownLatch? = null
+    // response timing (ms, elapsedRealtime)
+    @Volatile private var tSpeechEnd = 0L
+    @Volatile private var tFinal = 0L
+    @Volatile private var tAsr = -1L
+    @Volatile private var tAi = -1L
+    @Volatile private var tAnswerReady = 0L
+    @Volatile private var tReleaseExtra = -1L
     private val machine = PocStateMachine()
     private lateinit var audio: AudioManager
     private val reference = ReferenceBuffer(SAMPLE_RATE * 4)
@@ -151,13 +175,68 @@ class SadaService : Service() {
     override fun onCreate() {
         super.onCreate()
         Diag.init(this)
+        live = this
         audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         createChannel()
+    }
+
+    // ---- episode played from the app's web interface ----
+    private var episodeId = ""
+    private var episodeTitle = ""
+    private var episodeText = ""
+    private var episodeDurationMs = 0L
+
+    private fun captureEpisode(i: Intent?) {
+        episodeId = i?.getStringExtra(EXTRA_EPISODE_ID) ?: episodeId
+        episodeTitle = i?.getStringExtra(EXTRA_EPISODE_TITLE) ?: episodeTitle
+        episodeText = i?.getStringExtra(EXTRA_EPISODE_TEXT) ?: episodeText
+        episodeDurationMs = i?.getLongExtra(EXTRA_DURATION_MS, episodeDurationMs) ?: episodeDurationMs
+    }
+
+    /** Another episode while the service is running: replace the player, keep everything else. */
+    private fun switchEpisode(i: Intent) {
+        captureEpisode(i)
+        val source = i.getStringExtra(EXTRA_SOURCE) ?: return
+        player?.stop()
+        machine.start() // listening to the new episode
+        val p = createPlayer(source, i.getLongExtra(EXTRA_START_MS, 0L), loopAtEnd = false)
+        player = p
+        requestFocus()
+        p.start()
+        setPlaying(true)
+        syncPhase()
+    }
+
+    /** State for the web player (called from the web layer's thread). */
+    fun stateJson(): String {
+        val p = player
+        return org.json.JSONObject()
+            .put("running", started && alive)
+            .put("loaded", p != null)
+            .put("playing", p?.isPlaying == true)
+            .put("ended", p?.ended == true)
+            .put("phase", machine.phase.name)
+            .put("stateText", Diag.stateText)
+            .put("episodeId", episodeId)
+            .put("positionMs", p?.positionMs() ?: 0L)
+            .put("durationMs", episodeDurationMs)
+            .toString()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopEverything("Stopped from the notification or app"); return START_NOT_STICKY }
+            ACTION_PAUSE -> {
+                if (machine.phase == Phase.LISTENING && player?.isPlaying == true) runSteps(machine.onTogglePlayback(), "button:app")
+                return START_NOT_STICKY
+            }
+            ACTION_PLAY -> {
+                if (machine.phase == Phase.WAIT_CONTINUE) runSteps(machine.onTogglePlayback(), "button:app")
+                else if (machine.phase == Phase.LISTENING && player?.isPlaying == false) { requestFocus(); player?.play(); setPlaying(true) }
+                return START_NOT_STICKY
+            }
+            ACTION_SEEK -> { player?.seekTo(intent?.getLongExtra(EXTRA_SEEK_MS, 0L) ?: 0L); return START_NOT_STICKY }
+            ACTION_LOAD -> if (started) { switchEpisode(intent!!); return START_NOT_STICKY }
             ACTION_MARK_MISS -> { runSteps(machine.onMarkMiss(), "button:screen"); return START_NOT_STICKY }
             ACTION_ASK -> { activate("notification or app button"); return START_NOT_STICKY }
             ACTION_TOGGLE -> { runSteps(machine.onTogglePlayback(), "button:notification"); return START_NOT_STICKY }
@@ -166,6 +245,8 @@ class SadaService : Service() {
         }
         if (!goForeground()) { stopSelf(); return START_NOT_STICKY }
         if (!started) {
+            captureEpisode(intent)
+            startIntentMs = intent?.getLongExtra(EXTRA_START_MS, 0L) ?: 0L
             val source = intent?.getStringExtra(EXTRA_SOURCE)
             val playback = intent?.getBooleanExtra(EXTRA_PLAYBACK, true) ?: true
             wakeWord = intent?.getBooleanExtra(EXTRA_WAKE_WORD, false) ?: false // read before the microphone starts
@@ -195,12 +276,12 @@ class SadaService : Service() {
         Phase.ARMING -> "Question Mode: getting the microphone ready… wait for “Go ahead”"
         Phase.ASKING -> "Listening to your question ($captureMicLabel)… double-press Volume Up to finish"
         Phase.ANSWERING -> "Thinking… then answering"
-        Phase.WAIT_CONTINUE -> "Paused. Double-press Volume Up or say “Continue” to resume."
+        Phase.WAIT_CONTINUE -> "Paused. Say “Continue” or double-press Volume Up to resume."
         Phase.STOPPED -> "Starting…"
     }
 
     private fun buildNotification(text: String): Notification {
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val open = PendingIntent.getActivity(this, 0, Intent(this, WebActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         fun action(code: Int, act: String) = PendingIntent.getService(this, code, Intent(this, SadaService::class.java).setAction(act), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
@@ -314,13 +395,18 @@ class SadaService : Service() {
     }
 
     /** Starts the podcast, the microphone and listening (after the earbud route is up, in earbud mode). */
+    private var startIntentMs = 0L
+
+    private fun createPlayer(source: String, startMs: Long, loopAtEnd: Boolean) = PodcastPlayer(
+        this, Uri.parse(source), outAttrs, reference,
+        onEvent = { kind, text -> Diag.log(kind, text) },
+        preferredOutput = { if (earbudListening) scoOutput() else if (speakerMode) speakerOutput() else null },
+        startMs = startMs, loopAtEnd = loopAtEnd,
+    )
+
     private fun startAudio(source: String?, playback: Boolean, micMode: String, aec: Boolean) {
         if (playback) {
-            val p = PodcastPlayer(
-                this, Uri.parse(source!!), outAttrs, reference,
-                onEvent = { kind, text -> Diag.log(kind, text) },
-                preferredOutput = { if (earbudListening) scoOutput() else if (speakerMode) speakerOutput() else null },
-            )
+            val p = createPlayer(source!!, startIntentMs, loopAtEnd = episodeId.isEmpty()) // the app plays an episode once
             player = p
             requestFocus()
             p.start()
@@ -337,13 +423,58 @@ class SadaService : Service() {
         }
         if (!started) { stopEverything(if (earbudListening) "Earbud microphone failed to open" else "Phone microphone failed"); return }
         machine.start()
+        // Gain control starts at the level an earlier session learned (capped), not at 0 dB every time: otherwise the
+        // first "Hey Sada" of a session only gets the fixed-gain stream. Then let start-up sounds pass and reset the
+        // detector streams so they cannot influence the first detection.
+        val startGain = AnswerPlan.startGainDb(gainPrefs().getFloat(gainKey(), Float.NaN).toDouble())
+        frontEnd.agc().setGainDb(startGain)
+        Diag.log("gain", "Starting gain ${"%.1f".format(startGain)} dB (learned earlier, capped at ${AnswerPlan.MAX_START_GAIN_DB.toInt()} dB)")
+        main.postDelayed({ detector?.flushNow(); Diag.log("detector", "Detector streams reset after start-up") }, 2000)
         syncPhase()
         Diag.earbudMicStatus = earbudMicState()
         main.postDelayed({ refreshRoutes(log = true) }, 2000)
         main.post(heartbeat)
     }
 
+    // ---- wake-word pipeline health: mic input / detector processing / no match / rejected by state ----
+    private var hMicBlocks = 0L
+    private var hChunks = 0L
+    private var hAt = 0L
+    private var lastWakeRecoveryAt = 0L
+
+    private fun checkWakeHealth() {
+        val now = SystemClock.elapsedRealtime()
+        val blocks = Diag.micBlocksTotal
+        val chunks = Diag.buffersFed
+        val window = now - hAt
+        // only judge a window spent entirely listening for "Hey Sada" (not paused, not asking, not answering)
+        val listening = wakeWord && machine.phase == Phase.LISTENING && now - phaseSince >= window && hAt != 0L
+        val status = WakeHealth.evaluate(listening, window, blocks - hMicBlocks, Diag.rawLevelDb, chunks - hChunks)
+        hMicBlocks = blocks; hChunks = chunks; hAt = now
+        if (status == WakeHealth.Status.NOT_CHECKED) return
+        val text = when (status) {
+            WakeHealth.Status.OK -> "OK (audio arriving and processed; a missed Hey Sada here is a no-match)"
+            WakeHealth.Status.MIC_FAILURE -> "MICROPHONE: no usable audio in the last 10 s"
+            WakeHealth.Status.DETECTOR_STALLED -> "DETECTOR: audio arriving but not processed"
+            else -> "-"
+        }
+        if (text != Diag.wakeStatus) Diag.log("health", "Wake pipeline: $text")
+        Diag.wakeStatus = text
+        if (status == WakeHealth.Status.OK || !WakeHealth.mayRecover(now, lastWakeRecoveryAt)) return
+        lastWakeRecoveryAt = now
+        // Silent recovery: the podcast keeps playing, no message to the user, at most once a minute.
+        if (status == WakeHealth.Status.DETECTOR_STALLED) detector?.requestRebuild("health check: audio not processed")
+        else input?.requestReopen("health check: no usable audio for 10 s")
+    }
+
+    private fun gainPrefs() = getSharedPreferences("stage0-audio", Context.MODE_PRIVATE)
+    private fun gainKey() = "startGain-" + (if (earbudListening) "earbudCall" else if (speakerMode) "speaker" else "phoneMic")
+
     private fun stopEverything(reason: String) {
+        // Remember the gain this session learned, for the next session's start (only if it ran long enough to learn).
+        if (Diag.serviceRunning && System.currentTimeMillis() - Diag.startedAt > 60_000) {
+            gainPrefs().edit().putFloat(gainKey(), frontEnd.agc().gainDb().toFloat()).apply()
+        }
         alive = false
         main.removeCallbacksAndMessages(null)
         capture?.finishNow()
@@ -371,7 +502,9 @@ class SadaService : Service() {
 
     override fun onDestroy() {
         if (Diag.serviceRunning) stopEverything("Service destroyed")
+        if (live === this) live = null
         worker.shutdownNow()
+        answerThread.shutdownNow()
         super.onDestroy()
     }
 
@@ -602,11 +735,23 @@ class SadaService : Service() {
             } finally {
                 try { rec?.stop() } catch (_: Exception) {}
                 try { rec?.release() } catch (_: Exception) {}
-                finishEarbud(inp) // release call mode, wait until Android confirms, phone mic back
                 val fb = fallback
                 // exactly one continuation: a phone-mic fallback (before or during the question), or "question done"
-                if (fb != null && (!asking || lostMidQuestion)) main.post { if (alive) startPhoneCapture(MicReadiness.label(fb), fb) }
-                else main.post { questionDone() }
+                if (fb != null && (!asking || lostMidQuestion)) {
+                    finishEarbud(inp) // release call mode, wait until Android confirms, phone mic back
+                    main.post { if (alive) startPhoneCapture(MicReadiness.label(fb), fb) }
+                } else {
+                    // Transcription and Muse Spark use only the network (the earbud recorder is already released), so
+                    // they start now, while call mode is released here; the answer is spoken only once the route is back.
+                    val ready = CountDownLatch(1)
+                    routeReady = ready
+                    main.post { questionDone() }
+                    val r0 = SystemClock.elapsedRealtime()
+                    try { finishEarbud(inp) } finally {
+                        Diag.log("timing", "call-mode release took ${SystemClock.elapsedRealtime() - r0} ms (in parallel with transcription)")
+                        ready.countDown()
+                    }
+                }
             }
         }
     }
@@ -669,23 +814,28 @@ class SadaService : Service() {
         capture = null
         val prefs = getSharedPreferences("stage0", Context.MODE_PRIVATE)
         val api = SadaApi(prefs.getString("server", "") ?: "")
-        val lang = prefs.getString("lang", "both") ?: "both"
+        val lang = prefs.getString("lang", "en") ?: "en"
         val level = prefs.getString("level", "B1") ?: "B1"
         val positionMs = savedPositionMs
-        worker.execute {
+        tSpeechEnd = if (q != null && q.heardSpeech && q.doneAt > 0) q.doneAt - q.msSinceSpeech() else 0L
+        tFinal = SystemClock.elapsedRealtime()
+        tAsr = -1L; tAi = -1L; tReleaseExtra = -1L
+        answerThread.execute {
+            var noQuestion = false
             try {
                 if (q == null || !q.usable) {
+                    noQuestion = true
                     sayFailure(AnswerPlan.Failure.EMPTY_RECORDING, "no usable speech in the recording")
                     return@execute
                 }
-                tone(AudioManager.STREAM_MUSIC) // "got it, thinking"
+                if (routeReady == null) tone(AudioManager.STREAM_MUSIC) // "got it, thinking" (earbuds: after the route is back)
                 val t0 = SystemClock.elapsedRealtime()
                 val wav = Wav.encodeMono16(ShortArray(q.speech().size).also { pcm ->
                     val sp = q.speech()
                     for (i in sp.indices) pcm[i] = (sp[i] * 32767f).toInt().coerceIn(-32768, 32767).toShort()
                 }, SAMPLE_RATE)
                 val text = api.transcribe(wav)
-                val tAsr = SystemClock.elapsedRealtime() - t0
+                tAsr = SystemClock.elapsedRealtime() - t0
                 Diag.lastTranscript = text
                 Diag.log("transcript", "“$text” (${tAsr} ms)")
                 if (!AnswerPlan.usableTranscript(text)) {
@@ -694,16 +844,29 @@ class SadaService : Service() {
                 }
                 val ctx = questionContext(positionMs)
                 val result = api.ask(text, lang, level, ctx, positionMs / 1000.0)
-                val tAi = SystemClock.elapsedRealtime() - t0 - tAsr
+                tAi = SystemClock.elapsedRealtime() - t0 - tAsr
                 val en = result.optString("answer_en", "")
                 val ar = result.optString("answer_ar", "")
                 Diag.lastAnswer = if (en.isNotEmpty()) en else ar
                 Diag.log("answer", "Muse Spark answered in ${tAi} ms (${en.length + ar.length} characters)")
-                val lines = AnswerPlan.answer(lang, en, ar)
+                // the server reports the language actually used (e.g. Arabic because the question asked for it)
+                val lines = AnswerPlan.answer(result.optString("lang_used", lang), en, ar)
+                awaitRoute()
+                tAnswerReady = SystemClock.elapsedRealtime()
                 if (lines.isEmpty()) {
                     sayFailure(AnswerPlan.Failure.AI_ERROR, "empty answer")
                     return@execute
                 }
+                NativeApp.pushEvent(this, org.json.JSONObject()
+                    .put("type", "qa")
+                    .put("question", text)
+                    .put("isVocab", result.optBoolean("is_vocab", false))
+                    .put("term", result.optString("term", ""))
+                    .put("sentence", result.optString("sentence", ""))
+                    .put("answer_en", en).put("answer_ar", ar)
+                    .put("example", result.optString("example", ""))
+                    .put("episodeId", episodeId)
+                    .put("at", System.currentTimeMillis()))
                 var first = true
                 for (l in lines) { speakIn(l.text, l.lang, first); first = false }
                 if (result.optBoolean("is_vocab", false) && result.optString("term", "").isNotBlank()) {
@@ -718,6 +881,7 @@ class SadaService : Service() {
             } finally {
                 main.post {
                     for (s in machine.onAnswerDone()) execute(s, System.currentTimeMillis(), "", "")
+                    if (noQuestion) machine.offerRetry() // Volume Down may retry only now
                     syncPhase()
                 }
             }
@@ -725,15 +889,37 @@ class SadaService : Service() {
     }
 
     /** Says what went wrong (and logs the technical detail), then how to continue. Worker thread. */
+    /** Waits until the answer can be spoken on the right output (earbud question: call mode released). */
+    private fun awaitRoute() {
+        val r = routeReady ?: return
+        val w0 = SystemClock.elapsedRealtime()
+        r.await(4, TimeUnit.SECONDS)
+        tReleaseExtra = SystemClock.elapsedRealtime() - w0 // the part of the release NOT hidden behind the server calls
+        routeReady = null
+    }
+
+    /** Logs where the time went, at the first audible word of the answer. */
+    private fun logTiming(firstWordAt: Long) {
+        if (tFinal == 0L || tAi < 0) return
+        val endWait = if (tSpeechEnd > 0) tFinal - tSpeechEnd else -1L
+        val total = if (tSpeechEnd > 0) firstWordAt - tSpeechEnd else firstWordAt - tFinal
+        val line = AnswerPlan.timingLine(total, endWait, 0, tReleaseExtra, tAsr, tAi, firstWordAt - tAnswerReady)
+        Diag.lastTiming = line
+        Diag.log("timing", line, total)
+        tFinal = 0L
+    }
+
     private fun sayFailure(kind: AnswerPlan.Failure, detail: String) {
         Diag.log("answer-error", "$kind: $detail")
         Diag.lastAnswer = "(no answer: $kind)"
+        awaitRoute()
         speakAndWait(AnswerPlan.message(kind), first = true)
-        speakAndWait("Or say continue to keep listening.", first = false)
+        if (AnswerPlan.needsResumeHint(kind)) speakAndWait(AnswerPlan.RESUME_HINT, first = false)
     }
 
     /** Podcast context that is really known: test-episode title and nearby text (approximate), else the title only. */
     private fun questionContext(positionMs: Long): EpisodeContext {
+        if (episodeText.isNotEmpty()) return EpisodeContext.of(episodeTitle, positionMs, episodeDurationMs, episodeText)
         val isTest = Diag.source.startsWith("test episode")
         if (!isTest) return EpisodeContext.none(if (Diag.source.startsWith("your audio")) "the learner's own audio file" else "")
         val idx = TestEpisode.index(this) ?: return EpisodeContext.none("Sada test episode")
@@ -793,7 +979,10 @@ class SadaService : Service() {
         }
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
-                if (utteranceId?.startsWith("first-") == true) Diag.log("answer-start", "Speaking", System.currentTimeMillis() - wakeAtMs)
+                if (utteranceId?.startsWith("first-") == true) {
+                    Diag.log("answer-start", "Speaking", System.currentTimeMillis() - wakeAtMs)
+                    logTiming(SystemClock.elapsedRealtime())
+                }
             }
             override fun onDone(utteranceId: String?) { utteranceId?.let { ttsDone.remove(it)?.countDown() } }
             @Deprecated("Deprecated in Java")
@@ -979,6 +1168,23 @@ class SadaService : Service() {
     // ---------------- volume keys: double press of Volume Up ----------------
 
     private val gesture = VolumeGesture()
+    private val gestureDown = VolumeGesture()
+    private val pollGestureDown = object : Runnable {
+        override fun run() {
+            val d = gestureDown.poll(SystemClock.uptimeMillis())
+            if (d == null) { if (gestureDown.busy()) main.postDelayed(this, 20); return }
+            if (d.isDouble) {
+                val before = machine.phase
+                val steps = machine.onVolumeDownDouble()
+                Diag.log("volume-gesture", "Volume Down double press via $gestureSource in $before → " +
+                    if (steps.isEmpty()) "no action (not running)" else steps.joinToString(", "))
+                runSteps(steps, "button:volume-down double-press ($gestureSource)")
+            } else {
+                Diag.log("volume-gesture", "Volume Down: ${d.volumeSteps} press(es) via $gestureSource: podcast volume -${d.volumeSteps}")
+                setPodcastVolume(volLevel - d.volumeSteps)
+            }
+        }
+    }
     private var volumeProvider: VolumeProvider? = null
     private var volLevel = VOL_MAX
     private var wakeWord = false
@@ -1017,8 +1223,13 @@ class SadaService : Service() {
                 main.postDelayed(pollGesture, gesture.nextPollDelay() + 5)
             }
             AudioManager.ADJUST_LOWER -> {
-                Diag.log("volume-key", "Volume Down via $source (state ${machine.phase}): podcast volume")
-                setPodcastVolume(volLevel - 1)
+                // Same protection as Volume Up: a double press asks (again); single presses (applied after 0.45 s) and
+                // long or triple presses stay ordinary volume changes.
+                gestureDown.press(SystemClock.uptimeMillis())
+                gestureSource = source
+                Diag.log("volume-key", "Volume Down press ${gestureDown.pressesInBurst()} via $source (state ${machine.phase})")
+                main.removeCallbacks(pollGestureDown)
+                main.postDelayed(pollGestureDown, gestureDown.nextPollDelay() + 5)
             }
             else -> Diag.log("volume-key", "Volume adjustment $direction via $source ignored")
         }
@@ -1168,6 +1379,7 @@ class SadaService : Service() {
             val after = "${Diag.micRoute}|${Diag.playbackRoute}|${Diag.audioMode}|${Diag.scoOn}"
             if (before != after) Diag.log("route", "Changed → Mic: ${Diag.micRoute} | Playback: ${Diag.playbackRoute} | Mode: ${Diag.audioMode} | SCO: ${Diag.scoOn}")
             try { File(filesDir, "heartbeat.txt").writeText("running\t$now\t${Diag.startedAt}") } catch (_: Exception) {}
+            if (ticks % 2 == 0) checkWakeHealth()
             if (ticks % 60 == 0) Diag.log("alive", "Still running; battery ${Diag.batteryPct}%; ${Diag.aecText()}")
             main.postDelayed(this, 5000)
         }

@@ -13,7 +13,7 @@ public class PocStateMachineTest {
 
     @Test public void fullHandsFreeCycle() {
         PocStateMachine m = started();
-        assertEquals(Arrays.asList(WAKE_DETECTED, PAUSE_PODCAST, PREPARE_QUESTION_INPUT), m.onKeyword("HEY_SADA"));
+        assertEquals(Arrays.asList(WAKE_DETECTED, PAUSE_PODCAST, PREPARE_QUESTION_INPUT), m.onVolumeDouble());
         assertEquals(Phase.ARMING, m.getPhase());
         assertEquals(Arrays.asList(START_CAPTURE), m.onInputReady());
         assertEquals(Phase.ASKING, m.getPhase());
@@ -23,8 +23,11 @@ public class PocStateMachineTest {
         assertEquals(Phase.LISTENING, m.getPhase());
     }
 
-    @Test public void alternativeWakeLabel() {
-        assertEquals(Arrays.asList(WAKE_DETECTED, PAUSE_PODCAST, PREPARE_QUESTION_INPUT), started().onKeyword("HEY_SADA_ALT"));
+    @Test public void heySadaNoLongerActivates() {
+        PocStateMachine m = started();
+        assertEquals(Arrays.asList(UNKNOWN_KEYWORD), m.onKeyword("HEY_SADA"));
+        assertEquals(Arrays.asList(UNKNOWN_KEYWORD), m.onKeyword("HEY_SADA_ALT"));
+        assertEquals(Phase.LISTENING, m.getPhase());
     }
 
     @Test public void continueWhilePlayingIsFalseTrigger() {
@@ -35,12 +38,12 @@ public class PocStateMachineTest {
 
     @Test public void keywordsIgnoredWhilePreparingAskingAndAnswering() {
         PocStateMachine m = started();
-        m.onKeyword("HEY_SADA");
+        m.onVolumeDouble();
         assertEquals(Arrays.asList(IGNORED_BUSY), m.onKeyword("CONTINUE"));
         m.onInputReady();
         assertEquals("a question containing 'continue' must not resume", Arrays.asList(IGNORED_BUSY), m.onKeyword("CONTINUE"));
         m.onQuestionDone();
-        assertEquals(Arrays.asList(IGNORED_BUSY), m.onKeyword("HEY_SADA"));
+        assertEquals(Arrays.asList(IGNORED_BUSY), m.onVolumeDouble());
         assertEquals(Phase.ANSWERING, m.getPhase());
     }
 
@@ -54,8 +57,8 @@ public class PocStateMachineTest {
 
     @Test public void wakeWhileWaitingDoesNotResume() {
         PocStateMachine m = started();
-        m.onKeyword("HEY_SADA"); m.onInputReady(); m.onQuestionDone(); m.onAnswerDone();
-        assertEquals(Arrays.asList(WAKE_WHILE_PAUSED), m.onKeyword("HEY_SADA"));
+        m.onVolumeDouble(); m.onInputReady(); m.onQuestionDone(); m.onAnswerDone();
+        assertEquals(Arrays.asList(UNKNOWN_KEYWORD), m.onKeyword("HEY_SADA"));
         assertEquals(Phase.WAIT_CONTINUE, m.getPhase());
     }
 
@@ -84,13 +87,13 @@ public class PocStateMachineTest {
     @Test public void missMarkOnlyWhileListening() {
         PocStateMachine m = started();
         assertEquals(Arrays.asList(MISSED_WAKE), m.onMarkMiss());
-        m.onKeyword("HEY_SADA");
+        m.onVolumeDouble();
         assertEquals(Collections.emptyList(), m.onMarkMiss());
     }
 
     @Test public void stoppedIgnoresEverything() {
         PocStateMachine m = new PocStateMachine();
-        assertEquals(Collections.emptyList(), m.onKeyword("HEY_SADA"));
+        assertEquals(Collections.emptyList(), m.onVolumeDouble());
         assertEquals(Collections.emptyList(), m.onTogglePlayback());
         assertEquals(Collections.emptyList(), m.onActivate());
     }
@@ -98,7 +101,7 @@ public class PocStateMachineTest {
     @Test public void watchdogRecoversStalledSteps() {
         for (int stage = 0; stage < 3; stage++) {
             PocStateMachine m = started();
-            m.onKeyword("HEY_SADA");
+            m.onVolumeDouble();
             if (stage >= 1) m.onInputReady();
             if (stage >= 2) m.onQuestionDone();
             assertEquals(Arrays.asList(RECOVERED, LISTEN_FOR_CONTINUE), m.recover());
